@@ -74,6 +74,8 @@ struct CtrlState {
     uint64_t last_vcount[5] = {}; // sceCtrl ports.
 
     VirtualKeyboardState keyboard_state;
+    // buttons and sticks held by an external test driver (VITA3K_INPUT_PIPE, Windows only)
+    VirtualKeyboardState injected_state;
 
     std::atomic<bool> overlay_input_intercepted{ false };
 

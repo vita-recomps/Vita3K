@@ -25,6 +25,19 @@
 #include <kernel/state.h>
 #include <util/log.h>
 
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <thread>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#endif
+
 static int reserve_port(CtrlState &state) {
     for (int i = 0; i < SCE_CTRL_MAX_WIRELESS_NUM; i++) {
         if (state.free_ports[i]) {
@@ -127,6 +140,106 @@ void refresh_controllers(CtrlState &state, EmuEnvState &emuenv) {
     state.has_motion_support = found_gyro && found_accel;
 }
 
+#ifdef _WIN32
+// Test-only input injection. When VITA3K_INPUT_PIPE is set, a thread serves the named pipe
+// \\.\pipe\<value> and applies one command per line to CtrlState::injected_state:
+//   hold <button> [<button>...]   hold exactly these buttons ("hold" or "hold none" releases all)
+//   axes <lx> <ly> <rx> <ry>      stick positions in [-1, 1]
+// Buttons: cross circle square triangle up down left right l r l2 r2 l3 r3 start select.
+// Nothing goes through the window, so automated runs never need keyboard focus.
+static uint32_t parse_injected_button(const std::string &name) {
+    static const std::map<std::string, uint32_t> buttons = {
+        { "cross", SCE_CTRL_CROSS }, { "circle", SCE_CTRL_CIRCLE }, { "square", SCE_CTRL_SQUARE },
+        { "triangle", SCE_CTRL_TRIANGLE }, { "up", SCE_CTRL_UP }, { "down", SCE_CTRL_DOWN },
+        { "left", SCE_CTRL_LEFT }, { "right", SCE_CTRL_RIGHT }, { "l", SCE_CTRL_L1 }, { "r", SCE_CTRL_R1 },
+        { "l2", SCE_CTRL_L2 }, { "r2", SCE_CTRL_R2 }, { "l3", SCE_CTRL_L3 }, { "r3", SCE_CTRL_R3 },
+        { "start", SCE_CTRL_START }, { "select", SCE_CTRL_SELECT }
+    };
+    const auto it = buttons.find(name);
+    if (it == buttons.end()) {
+        LOG_WARN("Input pipe: unknown button '{}'", name);
+        return 0;
+    }
+    return it->second;
+}
+
+static void apply_injected_command(CtrlState &state, const std::string &line) {
+    std::istringstream words(line);
+    std::string command;
+    words >> command;
+    if (command == "hold") {
+        uint32_t buttons = 0;
+        for (std::string name; words >> name;)
+            if (name != "none")
+                buttons |= parse_injected_button(name);
+        // the PS Vita's L/R are L1/R1 in the extended (v2) functions
+        uint32_t buttons_basic = buttons & ~(SCE_CTRL_L1 | SCE_CTRL_R1);
+        if (buttons & SCE_CTRL_L1)
+            buttons_basic |= SCE_CTRL_L;
+        if (buttons & SCE_CTRL_R1)
+            buttons_basic |= SCE_CTRL_R;
+        std::lock_guard<std::mutex> guard(state.mutex);
+        state.injected_state.buttons = buttons_basic;
+        state.injected_state.buttons_ext = buttons;
+    } else if (command == "axes") {
+        float axes[4] = {};
+        for (float &axis : axes)
+            words >> axis;
+        std::lock_guard<std::mutex> guard(state.mutex);
+        std::copy(std::begin(axes), std::end(axes), state.injected_state.axes);
+    } else if (!command.empty()) {
+        LOG_WARN("Input pipe: unknown command '{}'", line);
+    }
+}
+
+static void input_pipe_thread(CtrlState &state, std::string pipe_name) {
+    for (;;) {
+        const HANDLE pipe = CreateNamedPipeA(pipe_name.c_str(), PIPE_ACCESS_INBOUND,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 0, 4096, 0, nullptr);
+        if (pipe == INVALID_HANDLE_VALUE) {
+            LOG_ERROR("Input pipe: could not create {} (error {})", pipe_name, GetLastError());
+            return;
+        }
+        if (ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED) {
+            std::string pending;
+            char buffer[512];
+            DWORD read = 0;
+            while (ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+                pending.append(buffer, read);
+                size_t end;
+                while ((end = pending.find('\n')) != std::string::npos) {
+                    std::string line = pending.substr(0, end);
+                    if (!line.empty() && line.back() == '\r')
+                        line.pop_back();
+                    apply_injected_command(state, line);
+                    pending.erase(0, end + 1);
+                }
+            }
+        }
+        CloseHandle(pipe);
+    }
+}
+
+static void start_input_pipe(CtrlState &state) {
+    static std::once_flag started;
+    std::call_once(started, [&state]() {
+        const char *name = getenv("VITA3K_INPUT_PIPE");
+        if (!name || !*name)
+            return;
+        const std::string pipe_name = fmt::format("\\\\.\\pipe\\{}", name);
+        LOG_INFO("Input pipe: listening on {}", pipe_name);
+        std::thread(input_pipe_thread, std::ref(state), pipe_name).detach();
+    });
+}
+#endif
+
+static void apply_injected(uint32_t *buttons, float axes[4], bool ext, const CtrlState &state) {
+    const auto &injected = state.injected_state;
+    *buttons |= ext ? injected.buttons_ext : injected.buttons;
+    for (int i = 0; i < 4; i++)
+        axes[i] += injected.axes[i];
+}
+
 static void apply_keyboard(uint32_t *buttons, float axes[4], bool ext, EmuEnvState &emuenv) {
     const auto &kb = emuenv.ctrl.keyboard_state;
     const uint32_t kb_buttons = ext ? kb.buttons_ext : kb.buttons;
@@ -227,6 +340,9 @@ static void apply_controller(EmuEnvState &emuenv, uint32_t *buttons, float axes[
 }
 
 static void retrieve_ctrl_data(EmuEnvState &emuenv, int port, bool is_v2, bool negative, bool from_ext_function, SceUInt32 &buttons, SceUInt8 &lx, SceUInt8 &ly, SceUInt8 &rx, SceUInt8 &ry) {
+#ifdef _WIN32
+    start_input_pipe(emuenv.ctrl);
+#endif
     std::lock_guard<std::mutex> guard(emuenv.ctrl.mutex);
 
     if (port == 0) {
@@ -273,6 +389,7 @@ static void retrieve_ctrl_data(EmuEnvState &emuenv, int port, bool is_v2, bool n
     } else if (port == 1) {
         // If not in PSTV mode, every controller input is considered as a port 1 input
         apply_keyboard(&buttons, axes.data(), is_v2, emuenv);
+        apply_injected(&buttons, axes.data(), is_v2, state);
         for (const auto &[_, controller] : state.controllers) {
             apply_controller(emuenv, &buttons, axes.data(), controller.controller.get(), is_v2);
         }
