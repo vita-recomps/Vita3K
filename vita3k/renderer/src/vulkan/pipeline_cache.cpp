@@ -17,6 +17,7 @@
 
 #include <renderer/vulkan/pipeline_cache.h>
 
+#include <renderer/vulkan/functions.h>
 #include <renderer/vulkan/gxm_to_vulkan.h>
 #include <renderer/vulkan/state.h>
 #include <renderer/vulkan/types.h>
@@ -677,7 +678,13 @@ vk::PipelineVertexInputStateCreateInfo PipelineCache::get_vertex_input_state(con
 
     uint32_t used_streams = 0;
 
-    for (const SceGxmVertexAttribute &attribute : vertex_program.attributes) {
+    // streams Vulkan cannot fetch in place are repacked (see bind_vertex_streams)
+    std::array<VertexStreamLayout, SCE_GXM_MAX_VERTEX_STREAMS> stream_layouts;
+    for (uint32_t stream_index = 0; stream_index < std::min<size_t>(vertex_program.streams.size(), SCE_GXM_MAX_VERTEX_STREAMS); stream_index++)
+        stream_layouts[stream_index] = get_vertex_stream_layout(vertex_program, stream_index);
+
+    for (size_t attribute_index = 0; attribute_index < vertex_program.attributes.size(); attribute_index++) {
+        const SceGxmVertexAttribute &attribute = vertex_program.attributes[attribute_index];
         if (!vkvert->attribute_infos.contains(attribute.regIndex))
             continue;
 
@@ -745,12 +752,14 @@ vk::PipelineVertexInputStateCreateInfo PipelineCache::get_vertex_input_state(con
             }
         }
 
+        const VertexStreamLayout &layout = stream_layouts[attribute.streamIndex];
+        const uint32_t attribute_offset = layout.repack ? layout.attributes[attribute_index].dst_offset : attribute.offset;
         for (uint32_t i = 0; i < array_size; i++) {
             attr_descr.push_back(vk::VertexInputAttributeDescription{
                 .location = info.location + i,
                 .binding = attribute.streamIndex,
                 .format = format,
-                .offset = attribute.offset + i * array_element_size });
+                .offset = attribute_offset + i * array_element_size });
         }
     }
 
@@ -762,8 +771,8 @@ vk::PipelineVertexInputStateCreateInfo PipelineCache::get_vertex_input_state(con
 
         const bool is_instanced = gxm::is_stream_instancing(static_cast<SceGxmIndexSource>(stream.indexSource));
 
-        // streams with other strides are repacked to a multiple of 4 (see restride_stream)
-        const uint32_t stride = align(stream.stride, 4);
+        const VertexStreamLayout &layout = stream_layouts[stream_index];
+        const uint32_t stride = layout.repack ? layout.stride : stream.stride;
         binding_descr.push_back(vk::VertexInputBindingDescription{
             .binding = stream_index,
             .stride = stride,

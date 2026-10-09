@@ -57,4 +57,25 @@ void sync_visibility_index(VKContext &context, bool enable, uint32_t index, bool
 
 void refresh_pipeline(VKContext &context);
 
+// Vulkan requires every vertex attribute address (offset + stride * index) to be a multiple of the
+// component size of its format, and Metal only allows strides that are a multiple of 4. The PS Vita
+// has neither restriction. A stream that breaks either rule is repacked into this layout, with every
+// attribute at a 4-aligned offset; NVIDIA tolerates the original layout but AMD fetches garbage.
+struct VertexStreamLayout {
+    struct Attribute {
+        uint32_t src_offset = 0;
+        uint32_t dst_offset = 0;
+        // number of bytes Vulkan fetches for this attribute
+        uint32_t size = 0;
+    };
+
+    bool repack = false;
+    // stride of the repacked stream (only meaningful if repack is true)
+    uint32_t stride = 0;
+    // indexed like SceGxmVertexProgram::attributes, only filled for the attributes of this stream
+    std::vector<Attribute> attributes;
+};
+
+VertexStreamLayout get_vertex_stream_layout(const SceGxmVertexProgram &vertex_program, uint32_t stream_index);
+
 } // namespace renderer::vulkan

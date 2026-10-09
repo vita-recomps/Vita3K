@@ -100,20 +100,87 @@ void mid_scene_flush(VKContext &context, const SceGxmNotification notification) 
     }
 }
 
-// Restride vertex streams to a multiple of 4 bytes. Metal only allows such strides, and
-// Vulkan requires every attribute address (offset + stride * index) to be a multiple of
-// its format's component size, which an odd stride breaks. AMD drivers fetch garbage then.
-void restride_stream(const uint8_t *&stream, uint32_t &size, uint32_t stride) {
-    const uint32_t new_stride = align(stride, 4);
-    const uint32_t nb_vertex_input = ((size + stride - 1) / stride);
-
-    uint8_t *new_data = new uint8_t[nb_vertex_input * new_stride];
-    for (uint32_t i = 0; i < nb_vertex_input; i++) {
-        memcpy(new_data + new_stride * i, stream + stride * i, stride);
+// component size and number of bytes Vulkan fetches for an attribute (mirrors PipelineCache::get_vertex_input_state)
+static void get_attribute_fetch_size(const SceGxmVertexAttribute &attribute, const shader::usse::AttributeInformation &info, uint32_t &component_size, uint32_t &fetch_size) {
+    uint32_t component_count = attribute.componentCount;
+    if (info.regformat) {
+        component_count = info.component_count;
+        switch (info.gxm_type) {
+        case SCE_GXM_PARAMETER_TYPE_U8:
+        case SCE_GXM_PARAMETER_TYPE_S8:
+        case SCE_GXM_PARAMETER_TYPE_C10:
+            component_size = 1;
+            break;
+        case SCE_GXM_PARAMETER_TYPE_U16:
+        case SCE_GXM_PARAMETER_TYPE_S16:
+        case SCE_GXM_PARAMETER_TYPE_F16:
+            component_size = 2;
+            break;
+        default:
+            component_size = 4;
+            break;
+        }
+        if (info.gxm_type == SCE_GXM_PARAMETER_TYPE_C10)
+            component_count = (component_count * 10 + 7) / 8;
+        if (component_count > 4)
+            // matrix, fetched as an array of vec4
+            component_count = align(component_count, 4);
+    } else {
+        component_size = gxm::attribute_format_size(attribute.format);
     }
 
-    stream = new_data;
-    size = nb_vertex_input * new_stride;
+    // rgb attributes are fetched as rgba on GPUs without rgb vertex formats
+    if (component_count == 3)
+        component_count = 4;
+    fetch_size = component_size * component_count;
+}
+
+VertexStreamLayout get_vertex_stream_layout(const SceGxmVertexProgram &vertex_program, uint32_t stream_index) {
+    const VertexProgram *vkvert = vertex_program.renderer_data.get();
+    const uint32_t stride = vertex_program.streams[stream_index].stride;
+
+    VertexStreamLayout layout;
+    layout.attributes.resize(vertex_program.attributes.size());
+    layout.repack = stride % 4 != 0;
+    uint32_t cursor = 0;
+    for (size_t i = 0; i < vertex_program.attributes.size(); i++) {
+        const SceGxmVertexAttribute &attribute = vertex_program.attributes[i];
+        if (attribute.streamIndex != stream_index || !vkvert->attribute_infos.contains(attribute.regIndex))
+            continue;
+
+        uint32_t component_size, fetch_size;
+        get_attribute_fetch_size(attribute, vkvert->attribute_infos.at(attribute.regIndex), component_size, fetch_size);
+        layout.repack |= attribute.offset % component_size != 0;
+        layout.attributes[i] = { attribute.offset, cursor, fetch_size };
+        cursor += align(fetch_size, 4);
+    }
+    // a stride of 0 (every vertex reads the same data) stays 0
+    layout.stride = stride == 0 ? 0 : std::max(cursor, 4U);
+    return layout;
+}
+
+// copy a vertex stream into the repacked layout, returns the new data (to be deleted by the caller)
+static const uint8_t *repack_stream(const uint8_t *stream, uint32_t &size, uint32_t stride, const VertexStreamLayout &layout) {
+    const uint32_t nb_vertex_input = stride == 0 ? 1 : (size + stride - 1) / stride;
+    uint32_t new_size = nb_vertex_input * layout.stride;
+    for (const auto &attribute : layout.attributes)
+        new_size = std::max(new_size, attribute.dst_offset + attribute.size);
+
+    uint8_t *new_data = new uint8_t[new_size]();
+    for (uint32_t i = 0; i < nb_vertex_input; i++) {
+        for (const auto &attribute : layout.attributes) {
+            if (attribute.size == 0)
+                continue;
+            const uint32_t src = stride * i + attribute.src_offset;
+            if (src >= size)
+                continue;
+            // never read past the guest stream
+            memcpy(new_data + layout.stride * i + attribute.dst_offset, stream + src, std::min(attribute.size, size - src));
+        }
+    }
+
+    size = new_size;
+    return new_data;
 }
 
 // when needed, how many descriptor of the given size we allocate for each frame at once
@@ -290,9 +357,9 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
 
     for (int i = 0; i < max_stream_idx; i++) {
         if (state.vertex_streams[i].data) {
-            // a stride that is not a multiple of 4 has to be repacked, so such a stream cannot stay mapped
-            const bool restride = vertex_program.streams[i].stride % 4 != 0;
-            if (context.state.features.enable_memory_mapping && !restride) {
+            // a stream that Vulkan cannot fetch in place is repacked, so it cannot stay mapped
+            const VertexStreamLayout layout = get_vertex_stream_layout(vertex_program, i);
+            if (context.state.features.enable_memory_mapping && !layout.repack) {
                 auto [buffer, offset] = context.state.get_matching_mapping(state.vertex_streams[i].data.cast<void>());
 
                 context.vertex_stream_offsets[i] = offset;
@@ -304,14 +371,14 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
 
                 const uint8_t *stream = state.vertex_streams[i].data.get(mem);
                 uint32_t stream_size = state.vertex_streams[i].size;
-                if (restride)
-                    restride_stream(stream, stream_size, vertex_program.streams[i].stride);
+                if (layout.repack)
+                    stream = repack_stream(stream, stream_size, vertex_program.streams[i].stride, layout);
 
                 context.vertex_stream_ring_buffer.allocate(context.prerender_cmd, stream_size, stream);
                 context.vertex_stream_offsets[i] = context.vertex_stream_ring_buffer.data_offset;
                 context.vertex_stream_buffers[i] = context.vertex_stream_ring_buffer.handle();
 
-                if (restride)
+                if (layout.repack)
                     delete[] stream;
             }
 
