@@ -20,6 +20,8 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+// after Windows.h
+#include <DbgHelp.h>
 #endif
 
 #include <spdlog/async.h>
@@ -178,6 +180,63 @@ void rebuild_default_logger() {
 
 // log exceptions and flush log file on exceptions
 #ifdef _WIN32
+// Log the faulting thread's call stack (module+offset, plus the symbol when a
+// PDB is found) so crashes inside drivers can be traced to their caller.
+// Unwinding uses the OS unwind tables, which works without DbgHelp.
+static void log_stack_trace(const CONTEXT *ctx) noexcept {
+    const HANDLE process = GetCurrentProcess();
+    static bool sym_ready = false;
+    if (!sym_ready) {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        // fails with ERROR_INVALID_PARAMETER when something already initialized it
+        sym_ready = SymInitialize(process, nullptr, TRUE) || GetLastError() == ERROR_INVALID_PARAMETER;
+        if (sym_ready)
+            SymRefreshModuleList(process);
+    }
+
+    CONTEXT context = *ctx;
+    alignas(SYMBOL_INFO) char symbol_buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME]{};
+    SYMBOL_INFO *symbol = reinterpret_cast<SYMBOL_INFO *>(symbol_buffer);
+    for (int i = 0; i < 48 && context.Rip; i++) {
+        const DWORD64 pc = context.Rip;
+
+        HMODULE module = nullptr;
+        char module_name[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(pc), &module))
+            GetModuleFileNameA(module, module_name, MAX_PATH);
+        const char *module_short = strrchr(module_name, '\\');
+        module_short = module_short ? module_short + 1 : module_name;
+        const DWORD64 offset = pc - reinterpret_cast<DWORD64>(module);
+
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = MAX_SYM_NAME;
+        DWORD64 displacement = 0;
+        IMAGEHLP_LINE64 line{ sizeof(IMAGEHLP_LINE64) };
+        DWORD line_displacement = 0;
+        if (sym_ready && SymFromAddr(process, pc, &displacement, symbol)) {
+            if (SymGetLineFromAddr64(process, pc, &line_displacement, &line))
+                LOG_CRITICAL("  #{:02} {}+{} {}+{} ({}:{})", i, module_short, log_hex(offset), symbol->Name, log_hex(displacement), line.FileName, line.LineNumber);
+            else
+                LOG_CRITICAL("  #{:02} {}+{} {}+{}", i, module_short, log_hex(offset), symbol->Name, log_hex(displacement));
+        } else {
+            LOG_CRITICAL("  #{:02} {}+{}", i, module_short, log_hex(offset));
+        }
+
+        DWORD64 image_base = 0;
+        PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(pc, &image_base, nullptr);
+        if (!function) {
+            // leaf function: the return address is on top of the stack
+            context.Rip = *reinterpret_cast<DWORD64 *>(context.Rsp);
+            context.Rsp += 8;
+        } else {
+            void *handler_data = nullptr;
+            DWORD64 establisher_frame = 0;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, pc, function, &context, &handler_data, &establisher_frame, nullptr);
+        }
+    }
+}
+
 static LONG WINAPI exception_handler(PEXCEPTION_POINTERS pExp) noexcept {
     const unsigned ec = pExp->ExceptionRecord->ExceptionCode;
     switch (ec) {
@@ -196,6 +255,7 @@ static LONG WINAPI exception_handler(PEXCEPTION_POINTERS pExp) noexcept {
         default:
             break;
         }
+        log_stack_trace(pExp->ContextRecord);
         break;
     case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
         LOG_CRITICAL("Exception EXCEPTION_ARRAY_BOUNDS_EXCEEDED ({}). ", log_hex(ec));
