@@ -762,11 +762,8 @@ vk::PipelineVertexInputStateCreateInfo PipelineCache::get_vertex_input_state(con
 
         const bool is_instanced = gxm::is_stream_instancing(static_cast<SceGxmIndexSource>(stream.indexSource));
 
-#ifdef __APPLE__
+        // streams with other strides are repacked to a multiple of 4 (see restride_stream)
         const uint32_t stride = align(stream.stride, 4);
-#else
-        const uint32_t stride = stream.stride;
-#endif
         binding_descr.push_back(vk::VertexInputBindingDescription{
             .binding = stream_index,
             .stride = stride,
