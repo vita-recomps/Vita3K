@@ -20,6 +20,7 @@
 // to the executable. The recompiled modules (ssd_aot_<module>.dll, generated locally from the
 // player's own dump) are loaded from the same folder.
 
+#include "../archive.h"
 #include "input.h"
 #include "settings.h"
 
@@ -29,6 +30,7 @@
 #include <config/version.h>
 #include <display/state.h>
 #include <emuenv/state.h>
+#include <packages/functions.h>
 #include <kernel/state.h>
 #include <ime/functions.h>
 #include <modules/module_parent.h>
@@ -49,7 +51,9 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <algorithm>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -86,6 +90,28 @@ std::string select_recompiled_modules(const fs::path &dir) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+    // command line (tools/install-game.ps1 in ss-delta uses it):
+    //   --install-firmware <PUP>   install a firmware update file into the Vita file system
+    //   --install <zip|vpk|folder> install a game dump (app, patch, DLC) into it
+    //   --dump-elfs <seconds>      run the game that long, writing every module as loaded to
+    //                              ss-delta/elfdumps/ (the input for recompiling), then quit
+    //   --vita-fs <folder>         the Vita file system to use instead of ss-delta.ini's
+    std::vector<std::string> install_firmware, install_content;
+    double dump_elfs_seconds = 0;
+    std::string vita_fs_override;
+    for (int i = 1; i < argc; i++) {
+        const std::string arg = argv[i];
+        const bool has_value = i + 1 < argc;
+        if (arg == "--install-firmware" && has_value)
+            install_firmware.push_back(argv[++i]);
+        else if (arg == "--install" && has_value)
+            install_content.push_back(argv[++i]);
+        else if (arg == "--dump-elfs" && has_value)
+            dump_elfs_seconds = std::atof(argv[++i]);
+        else if (arg == "--vita-fs" && has_value)
+            vita_fs_override = argv[++i];
+    }
+
     Root root_paths;
     app::init_paths(root_paths);
     const fs::path exe_dir = root_paths.get_static_assets_path();
@@ -96,7 +122,9 @@ int main(int argc, char *argv[]) {
     root_paths.set_log_path(data_dir);
     root_paths.set_shared_path(data_dir);
 
-    const ss_delta::Settings settings = ss_delta::load_settings(exe_dir);
+    ss_delta::Settings settings = ss_delta::load_settings(exe_dir);
+    if (!vita_fs_override.empty())
+        settings.vita_fs = fs_utils::utf8_to_path(vita_fs_override) / "";
     root_paths.set_vita_fs_path(settings.vita_fs);
 
     if (logging::init(root_paths, false) != Success)
@@ -174,10 +202,36 @@ int main(int argc, char *argv[]) {
 
     // SSD_DUMP_ELFS: write every module as loaded (decrypted, relocated) to ss-delta/elfdumps/, the
     // input for recompiling the firmware modules the game loads (docs/05-recompiler.md in ss-delta)
-    if (std::getenv("SSD_DUMP_ELFS"))
+    if (std::getenv("SSD_DUMP_ELFS") || dump_elfs_seconds > 0)
         emuenv.kernel.debugger.dump_elfs = true;
 
     init_libraries(emuenv);
+
+    if (!install_firmware.empty() || !install_content.empty()) {
+        bool ok = true;
+        for (const auto &pup : install_firmware) {
+            LOG_INFO("Installing firmware {}", pup);
+            fs::create_directories(emuenv.vita_fs_path);
+            install_pup(emuenv.vita_fs_path, fs_utils::utf8_to_path(pup), [](uint32_t progress) {
+                LOG_INFO("Firmware installation: {}%", progress);
+            });
+        }
+        for (const auto &content : install_content) {
+            const fs::path path = fs_utils::utf8_to_path(content);
+            LOG_INFO("Installing {}", content);
+            if (fs::is_directory(path)) {
+                ok = install_contents(emuenv, path) > 0 && ok;
+            } else {
+                const auto installed = install_archive(emuenv, path);
+                ok = !installed.empty() && std::all_of(installed.begin(), installed.end(), [](const ContentInfo &c) { return c.state; }) && ok;
+            }
+        }
+        LOG_INFO("Installation {}", ok ? "done" : "failed");
+#ifdef _WIN32
+        CoUninitialize();
+#endif
+        return ok ? 0 : 1;
+    }
     if (!app::init_apps_list(emuenv)) {
         fail("The list of installed apps could not be read. See ss-delta/vita3k.log.");
         return 1;
@@ -264,7 +318,15 @@ int main(int argc, char *argv[]) {
             break;
         }
     };
+    const auto session_start = std::chrono::steady_clock::now();
     hooks.on_tick = [&] {
+        if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
+            // --dump-elfs: the modules the game loads at boot are written; quit
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+            dump_elfs_seconds = 0;
+        }
         // typed text reaches the game's keyboard dialogs (the player name) only while SDL's text
         // input is on; the session handles Enter, Backspace and Escape itself
         if (window) {
