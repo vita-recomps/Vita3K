@@ -99,6 +99,12 @@ static overlay::button_states poll_overlay_input(EmuEnvState &emuenv) {
     axes[2] += kb.axes[2];
     axes[3] += kb.axes[3];
 
+    // the test driver's buttons (VITA3K_INPUT_PIPE) drive the dialogs too
+    const auto &injected = emuenv.ctrl.injected_state;
+    buttons |= injected.buttons_ext;
+    for (int i = 0; i < 4; i++)
+        axes[i] += injected.axes[i];
+
     for (const auto &[_, controller] : emuenv.ctrl.controllers) {
         SDL_Gamepad *gp = controller.controller.get();
         for (const auto &binding : get_controller_bindings_ext(emuenv)) {
