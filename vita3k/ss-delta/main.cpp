@@ -30,6 +30,7 @@
 #include <emuenv/state.h>
 #include <modules/module_parent.h>
 #include <sdl-frontend/session.h>
+#include <touch/state.h>
 #include <util/log.h>
 #include <util/string_utils.h>
 #include <util/sysinfo.h>
@@ -172,12 +173,47 @@ int main(int argc, char *argv[]) {
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         if (settings.fullscreen)
             SDL_SetWindowFullscreen(window, true);
+        emuenv.touch.renderer_focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
     };
     hooks.on_event = [&](const SDL_Event &event) {
-        if (!window || event.type != SDL_EVENT_KEY_DOWN || event.key.repeat)
+        if (!window)
             return;
-        if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)))
-            SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+        // the mouse is the touchscreens, as in Vita3K's Qt window: left button front, right button rear
+        auto &touch = emuenv.touch;
+        const auto set_mouse = [&](float x, float y) {
+            const float density = SDL_GetWindowPixelDensity(window); // window points -> drawable pixels
+            touch.mouse_x = x * density;
+            touch.mouse_y = y * density;
+        };
+        switch (event.type) {
+        case SDL_EVENT_KEY_DOWN:
+            if (!event.key.repeat && (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT))))
+                SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            set_mouse(event.motion.x, event.motion.y);
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP: {
+            set_mouse(event.button.x, event.button.y);
+            const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+            if (event.button.button == SDL_BUTTON_LEFT)
+                touch.mouse_button_left = down;
+            else if (event.button.button == SDL_BUTTON_RIGHT)
+                touch.mouse_button_right = down;
+            break;
+        }
+        case SDL_EVENT_WINDOW_FOCUS_GAINED:
+            touch.renderer_focused = true;
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            touch.renderer_focused = false;
+            touch.mouse_button_left = false;
+            touch.mouse_button_right = false;
+            break;
+        default:
+            break;
+        }
     };
     hooks.on_tick = [&] {
         const auto now = std::chrono::steady_clock::now();
