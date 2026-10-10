@@ -60,6 +60,8 @@ struct Registry {
     std::vector<std::unique_ptr<LoadedModule>> modules;
     // entry address (bit 0 = Thumb) -> function and its module; immutable after loading
     std::unordered_map<uint32_t, std::pair<AotFn, LoadedModule *>> functions;
+    // resume point (bit 0 = Thumb) -> its function and module (aot_abi.h AotResume)
+    std::unordered_map<uint32_t, std::pair<AotFn, LoadedModule *>> resumes;
     MemState *mem = nullptr;
     Address sentinel = 0;
     bool enabled = false;
@@ -68,7 +70,7 @@ struct Registry {
 
 Registry registry;
 
-std::atomic<uint64_t> native_entries{ 0 }, guest_calls{ 0 }, import_calls{ 0 }, escapes{ 0 };
+std::atomic<uint64_t> native_entries{ 0 }, resume_entries{ 0 }, guest_calls{ 0 }, import_calls{ 0 }, escapes{ 0 };
 std::atomic<uint64_t> native_insns{ 0 }, jit_insns{ 0 };
 std::atomic<int64_t> next_log{ 0 };
 std::mutex escape_mutex;
@@ -181,6 +183,7 @@ void aot_init(MemState &mem, Address sentinel) {
     std::call_once(loaded, load_modules);
     registry.enabled = false;
     registry.functions.clear();
+    registry.resumes.clear();
     if (registry.modules.empty())
         return;
     if (mem.use_page_table) {
@@ -227,6 +230,18 @@ void aot_init(MemState &mem, Address sentinel) {
             registry.functions.emplace(mod.functions[i].addr, std::make_pair(mod.functions[i].fn, m.get()));
             registered++;
         }
+        // SSD_AOT_RESUME=0: frames the JIT took over after an escape stay on the JIT
+        static const bool use_resumes = [] {
+            const char *const env = std::getenv("SSD_AOT_RESUME");
+            return !env || std::string(env) != "0";
+        }();
+        for (uint32_t i = 0; use_resumes && i < mod.resume_count; i++) {
+            const armrecomp::AotResume &r = mod.resumes[i];
+            const uint32_t a = r.function & ~1u;
+            if (!ranges.empty() && std::none_of(ranges.begin(), ranges.end(), [a](const auto &rg) { return rg.first <= a && a < rg.second; }))
+                continue;
+            registry.resumes.emplace(r.addr, std::make_pair(r.fn, m.get()));
+        }
         if (!ranges.empty())
             LOG_INFO("AOT: SSD_AOT_RANGE leaves {} of {} functions native", registered, mod.function_count);
         m->lo = mod.function_count ? mod.functions[0].addr & ~1u : 0;
@@ -241,6 +256,7 @@ void aot_deinit() {
         LOG_INFO("AOT: {}", aot_counters_text());
     registry.enabled = false;
     registry.functions.clear();
+    registry.resumes.clear();
     registry.mem = nullptr;
     registry.sentinel = 0;
 }
@@ -253,11 +269,11 @@ Address aot_sentinel() {
     return registry.sentinel;
 }
 
-AotFn aot_lookup(uint32_t addr) {
-    const auto it = registry.functions.find(addr);
-    if (it == registry.functions.end())
-        return nullptr;
-    LoadedModule &m = *it->second.second;
+namespace {
+
+// native code once its module matches guest memory
+AotFn checked(const std::pair<AotFn, LoadedModule *> &entry) {
+    LoadedModule &m = *entry.second;
     Verified v = m.verified.load(std::memory_order_acquire);
     if (v == Verified::unknown) {
         const std::lock_guard<std::mutex> lock(m.verify_mutex);
@@ -267,7 +283,23 @@ AotFn aot_lookup(uint32_t addr) {
             m.verified = v;
         }
     }
-    return v == Verified::yes ? it->second.first : nullptr;
+    return v == Verified::yes ? entry.first : nullptr;
+}
+
+} // namespace
+
+AotFn aot_lookup(uint32_t addr) {
+    const auto it = registry.functions.find(addr);
+    return it == registry.functions.end() ? nullptr : checked(it->second);
+}
+
+AotFn aot_lookup_resume(uint32_t addr) {
+    const auto it = registry.resumes.find(addr);
+    return it == registry.resumes.end() ? nullptr : checked(it->second);
+}
+
+void aot_count_resume_entry() {
+    resume_entries.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool aot_count_jit_insns() {
@@ -347,8 +379,8 @@ void aot_count_escape(uint32_t pc) {
 }
 
 std::string aot_counters_text() {
-    std::string out = fmt::format("native entries {}, native->JIT calls {}, native->HLE calls {}, escapes {}",
-        native_entries.load(), guest_calls.load(), import_calls.load(), escapes.load());
+    std::string out = fmt::format("native entries {} (resumed {}), native->JIT calls {}, native->HLE calls {}, escapes {}",
+        native_entries.load(), resume_entries.load(), guest_calls.load(), import_calls.load(), escapes.load());
     const uint64_t native = native_insns.load(), jit = jit_insns.load();
     if (registry.count_jit_insns && native + jit)
         out += fmt::format("; instructions native {} JIT {} ({:.1f}% native)", native, jit, 100.0 * double(native) / double(native + jit));

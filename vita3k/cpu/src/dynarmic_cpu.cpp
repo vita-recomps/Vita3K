@@ -26,6 +26,7 @@
 
 #include <dynarmic/frontend/A32/a32_ir_emitter.h>
 #include <dynarmic/interface/A32/coprocessor.h>
+#include <dynarmic/backend/x64/exclusive_monitor_friend.h>
 #include <dynarmic/interface/exclusive_monitor.h>
 #include <dynarmic/ir/terminal.h>
 
@@ -169,7 +170,8 @@ public:
     bool PreCodeReadHook(bool is_thumb, Dynarmic::A32::VAddr pc, Dynarmic::A32::IREmitter &ir) override {
         if (!aot_enabled())
             return true;
-        if (pc != aot_sentinel() && !(is_thumb && aot_lookup(pc | 1)))
+        const uint32_t entry = pc | (is_thumb ? 1u : 0u);
+        if (pc != aot_sentinel() && !aot_lookup(entry) && !aot_lookup_resume(entry))
             return true;
         ir.BranchWritePC(ir.Imm32(pc));
         ir.CallHostFunction(&AotBoundary, ir.Imm64(reinterpret_cast<uint64_t>(cpu)));
@@ -300,6 +302,7 @@ public:
     void ExceptionRaised(uint32_t pc, Dynarmic::A32::Exception exception) override {
         switch (exception) {
         case Dynarmic::A32::Exception::Breakpoint: {
+            LOG_WARN("ss-delta: breakpoint instruction at {:08x} (thread {})", pc, parent->thread_id);
             cpu->break_ = true;
             cpu->jit->HaltExecution();
             if (cpu->is_thumb_mode())
@@ -541,6 +544,11 @@ bool DynarmicCPU::aot_diff_shadow(uint32_t pc, AotShadowResult &out) {
     s.jit->SetFpscr(jit->Fpscr());
     s.jit->ClearExclusiveState();
     s.monitor.ClearProcessor(0);
+    // exclusive loads read what other threads change concurrently, like exclusive stores: any
+    // exclusive access (which moves the reservation off this tag) skips the comparison
+    constexpr Dynarmic::VAddr untouched = 0xa07a07a0'00000000ull;
+    Dynarmic::VAddr &reservation = *Dynarmic::GetExclusiveMonitorAddressPointer(&s.monitor, 0);
+    reservation = untouched;
     s.journal.clear();
     s.abort_reason = nullptr;
     s.returned = false;
@@ -559,6 +567,9 @@ bool DynarmicCPU::aot_diff_shadow(uint32_t pc, AotShadowResult &out) {
             s.abort(why.c_str());
         }
     }
+    if (reservation != untouched)
+        s.abort("atomics");
+    s.monitor.ClearProcessor(0);
     aot_count_diff_cost(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count(), 20'000'000 - s.ticks_left);
     uint8_t *const base = parent->mem->memory.get();
     if (!s.abort_reason) {
@@ -697,17 +708,27 @@ bool DynarmicCPU::aot_boundary() {
     const uint32_t pc = jit->Regs()[15];
     if (pc == aot_sentinel())
         return true;
-    const AotFn fn = aot_lookup(pc | 1);
+    const uint32_t entry = pc | (is_thumb_mode() ? 1u : 0u);
+    AotFn fn = aot_lookup(entry);
+    // a resume point: a frame whose callee escaped returns here, and its function continues natively
+    const bool resume = !fn;
+    if (resume)
+        fn = aot_lookup_resume(entry);
     if (!fn) {
         LOG_ERROR("AOT: the JIT stopped at {} without native code", log_hex(pc));
         return false;
     }
     aot_count_native_entry();
-    // differential mode: the shadow JIT runs the call first
+    if (resume)
+        aot_count_resume_entry();
+    // differential mode: the shadow JIT runs the call first (calls only: a resumed frame does not
+    // return to the sentinel)
     const uint64_t diff_interval = aot_diff_interval();
     AotShadowResult shadow_result;
-    const bool diff = diff_interval && ++diff_counter % diff_interval == 0 && aot_diff_shadow(pc, shadow_result);
+    const bool diff = !resume && diff_interval && ++diff_counter % diff_interval == 0 && aot_diff_shadow(pc, shadow_result);
     aot_sync_to_guest();
+    if (resume)
+        guest.resume = pc;
     // SSD_AOT_TRACE=N logs the first N native calls (debugging)
     static const int64_t trace_limit = [] {
         const char *const env = std::getenv("SSD_AOT_TRACE");
@@ -809,16 +830,21 @@ void DynarmicCPU::aot_call_import(uint32_t stub) {
     }
     // svc #0; mov pc, lr; .word nid: the HLE function, as the run loop would call it
     aot_count_import_call();
-    const uint32_t ret = guest.r[14];
+    const uint32_t ret = guest.r[14], sp = guest.r[13];
     aot_sync_from_guest();
     set_pc(stub + 4);
     aot_import(words[2]);
     aot_sync_to_guest();
     if (parent->aot_unwind)
         throw AotUnwind{};
-    if (get_pc() != stub + 4 || is_thumb_mode()) {
-        // the HLE function switched contexts (SceFiber): continue there on the JIT
+    if (get_pc() != stub + 4 || is_thumb_mode() || guest.r[13] != sp || guest.r[14] != ret) {
+        // the HLE function switched contexts (SceFiber): continue there on the JIT. The other
+        // context may be suspended in the same import, so pc alone does not show the switch
         aot_count_escape(stub);
+        // a context suspended in an import resumes at its stub's `mov pc, lr`: return directly,
+        // to land on the caller's resume point
+        if (!is_thumb_mode() && *Ptr<uint32_t>(get_pc()).get(*parent->mem) == 0xe1a0f00e)
+            throw AotEscape{ guest.r[14] };
         throw AotEscape{ get_pc() | (is_thumb_mode() ? 1u : 0u) };
     }
     guest.r[15] = ret;

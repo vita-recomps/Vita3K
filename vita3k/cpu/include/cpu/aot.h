@@ -45,6 +45,9 @@ Address aot_sentinel();
 // The native function for a guest entry address (bit 0 set for Thumb), or null. A module's
 // functions become visible once its code has been checked against guest memory.
 AotFn aot_lookup(uint32_t addr);
+// the function containing a resume point (aot_abi.h AotResume), to call with GuestContext::resume set
+AotFn aot_lookup_resume(uint32_t addr);
+void aot_count_resume_entry();
 
 // Counters, logged every 10 s while native code runs and at deinit:
 // JIT -> native entries, native -> JIT calls (call_indirect, LLE import stubs), native -> HLE
