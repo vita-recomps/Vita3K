@@ -202,6 +202,7 @@ void set_context(VKContext &context, MemState &mem, VKRenderTarget *rt, const Fe
     context.last_macroblock_x = ~0;
     context.last_macroblock_y = ~0;
     context.ignore_macroblock = false;
+    context.drawn_since_macroblock_split = false;
 }
 
 void VKContext::start_recording(bool first_in_scene) {
@@ -528,7 +529,18 @@ void VKContext::check_for_macroblock_change(bool is_draw) {
     uint16_t curr_macroblock_x = scissor.offset.x / render_target->macroblock_width;
     uint16_t curr_macroblock_y = scissor.offset.y / render_target->macroblock_height;
 
-    if ((ignore_macroblock && is_draw) || curr_macroblock_x != last_macroblock_x || curr_macroblock_y != last_macroblock_y) {
+    // without a usable macroblock, every draw gets its own render pass (and, without texture
+    // viewports, its own recording). The split must come before the draw's textures are synced: a
+    // texture read from this surface is copied in the recording's prerender commands, which run
+    // before the draws already recorded. Splitting at the draw itself left that copy in the previous
+    // draw's recording, so each draw sampled what the previous one wrote a frame earlier (Soul
+    // Sacrifice Delta's blur chains: its bloom trailed moving objects)
+    const bool split_after_draw = ignore_macroblock && drawn_since_macroblock_split;
+    if (is_draw)
+        drawn_since_macroblock_split = true;
+    if (split_after_draw || curr_macroblock_x != last_macroblock_x || curr_macroblock_y != last_macroblock_y) {
+        if (split_after_draw)
+            drawn_since_macroblock_split = is_draw;
         // we changed the current macroblock, restart the renderpass
         last_macroblock_x = curr_macroblock_x;
         last_macroblock_y = curr_macroblock_y;

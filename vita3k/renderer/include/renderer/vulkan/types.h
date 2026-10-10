@@ -319,6 +319,8 @@ struct VKContext : public renderer::Context {
     uint16_t last_macroblock_y = ~0;
     // special case where we can't determine the current macroblock
     bool ignore_macroblock = false;
+    // with ignore_macroblock, a draw was recorded since the render pass last restarted
+    bool drawn_since_macroblock_split = false;
 
     // used if necessary to restart easily the render pass
     vk::RenderPassBeginInfo curr_renderpass_info;
