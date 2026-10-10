@@ -119,6 +119,8 @@ int main(int argc, char *argv[]) {
     cfg.set_vita_fs_path(settings.vita_fs);
     cfg.log_level = settings.log_level;
     cfg.discord_rich_presence = false;
+    // the game's online services are gone: no network at all, as on a Vita in flight mode
+    cfg.offline = true;
     cfg.check_for_updates = false;
     // what the game needs (docs/decisions.md D4 update 4 in ss-delta): Vulkan, surface sync and
     // high accuracy for its fog, haze and smoke, double-buffered memory mapping

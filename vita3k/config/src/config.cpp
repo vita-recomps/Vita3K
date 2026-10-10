@@ -166,6 +166,7 @@ static void check_members(Config &self, const Config &rhs) {
     self.fullscreen = rhs.fullscreen;
     self.console = rhs.console;
     self.frontend = rhs.frontend;
+    self.offline = rhs.offline;
     self.app_args = rhs.app_args;
     self.load_app_list = rhs.load_app_list;
     self.self_path = rhs.self_path;

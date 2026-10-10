@@ -166,6 +166,10 @@ static constexpr auto auto_lle_modules = {
 bool is_lle_module(SceSysmoduleModuleId module_id, EmuEnvState &emuenv) {
     const auto &paths = sysmodule_paths[module_id];
 
+    // offline (ss-delta): the HLE modules answer for HTTP and SSL, with no network
+    if (emuenv.cfg.offline && (module_id == SCE_SYSMODULE_HTTP || module_id == SCE_SYSMODULE_HTTPS || module_id == SCE_SYSMODULE_SSL))
+        return false;
+
     // Do we know the module and its dependencies' paths?
     const bool have_paths = !paths.empty();
 
@@ -206,6 +210,8 @@ bool is_lle_module(const std::string &module_name, EmuEnvState &emuenv) {
     // without recompiled code.
     static const bool hle_fiber = std::getenv("SSD_HLE_FIBER") || std::getenv("SSD_AOT");
     if (hle_fiber && module_name == "libfiber")
+        return false;
+    if (emuenv.cfg.offline && (module_name == "libhttp" || module_name == "libssl"))
         return false;
     if (emuenv.cfg.current_config.modules_mode != ModulesMode::AUTOMATIC) {
         if (std::ranges::contains(emuenv.cfg.current_config.lle_modules, module_name))

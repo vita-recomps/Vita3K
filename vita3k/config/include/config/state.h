@@ -53,6 +53,9 @@ struct Config {
     bool console = false;
     bool load_app_list = false;
     Frontend frontend = Frontend::qt;
+    // no network at all, as on a Vita in flight mode (ss-delta): NetCtl reports disconnected, HTTP
+    // and SSL use the HLE modules and every request fails; not saved in config.yml
+    bool offline = false;
 
     fs::path get_vita_fs_path() const {
         return fs_utils::utf8_to_path(vita_fs_path);

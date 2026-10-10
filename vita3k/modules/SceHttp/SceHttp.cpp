@@ -249,6 +249,12 @@ EXPORT(SceInt, sceHttpCreateConnectionWithURL, SceInt tmplId, const char *url, S
         port = parsed.port;
     // If fifth character is an s (meaning https) use 443, else 80
 
+    if (emuenv.cfg.offline) {
+        // no resolving and no socket: requests on this connection fail (sceHttpSendRequest)
+        emuenv.http.connections.emplace(connId, SceConnection{ tmplId, urlStr, enableKeepalive, isSecure, -1 });
+        return connId;
+    }
+
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     assert(sockfd);
     if (sockfd < 0) {
@@ -564,11 +570,13 @@ EXPORT(SceInt, sceHttpDeleteConnection, SceInt connId) {
 
     if (connIt == emuenv.http.connections.end())
         return RET_ERROR(SCE_HTTP_ERROR_INVALID_ID);
+    if (connIt->second.sockfd >= 0) {
 #ifdef _WIN32
-    closesocket(connIt->second.sockfd);
+        closesocket(connIt->second.sockfd);
 #else
-    close(connIt->second.sockfd);
+        close(connIt->second.sockfd);
 #endif // _WIN32
+    }
 
     emuenv.http.connections.erase(connIt);
 
@@ -948,6 +956,9 @@ EXPORT(SceInt, sceHttpSendRequest, SceInt reqId, const char *postData, SceSize s
     auto req = emuenv.http.requests.find(reqId);
     auto conn = emuenv.http.connections.find(req->second.connId);
     auto tmpl = emuenv.http.templates.find(conn->second.tmplId);
+
+    if (emuenv.cfg.offline)
+        return RET_ERROR(SCE_HTTP_ERROR_NETWORK);
 
     if (!emuenv.cfg.http_enable) {
         req->second.res.statusCode = 200;

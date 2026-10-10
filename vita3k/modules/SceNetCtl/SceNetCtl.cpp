@@ -574,6 +574,9 @@ EXPORT(int, sceNetCtlInetGetInfo, int code, SceNetCtlInfo *info) {
         return RET_ERROR(SCE_NET_CTL_ERROR_INVALID_ADDR);
     }
 
+    if (emuenv.cfg.offline)
+        return RET_ERROR(SCE_NET_CTL_ERROR_NOT_CONNECTED);
+
     const auto addr = net_utils::get_selected_assigned_addr(emuenv.cfg.adhoc_addr);
 
     switch (code) {
@@ -678,6 +681,11 @@ EXPORT(int, sceNetCtlInetGetState, int *state) {
 
     if (!state) {
         return RET_ERROR(SCE_NET_CTL_ERROR_INVALID_ADDR);
+    }
+
+    if (emuenv.cfg.offline) {
+        *state = SCE_NET_CTL_STATE_DISCONNECTED;
+        return 0;
     }
 
     *state = SCE_NET_CTL_STATE_IPOBTAINED;
