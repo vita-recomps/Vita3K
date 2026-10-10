@@ -291,6 +291,8 @@ int run(EmuEnvState &emuenv, app::AppSessionController &session, AppLaunchReques
         while (running) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
+                if (hooks.on_event)
+                    hooks.on_event(event);
                 switch (event.type) {
                 case SDL_EVENT_QUIT:
                 case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -357,6 +359,8 @@ int run(EmuEnvState &emuenv, app::AppSessionController &session, AppLaunchReques
             }
 
             app::update_runtime_metrics(emuenv, runtime_metrics);
+            if (hooks.on_tick)
+                hooks.on_tick();
 
             if (!session.is_running())
                 running = false;

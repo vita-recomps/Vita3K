@@ -24,6 +24,7 @@
 
 struct EmuEnvState;
 struct SDL_Window;
+union SDL_Event;
 
 namespace app {
 class AppSessionController;
@@ -45,6 +46,10 @@ struct Hooks {
     std::function<void()> on_ime_changed;
     // The session is about to stop
     std::function<void()> on_stop;
+    // Every event the window receives, before the session handles it
+    std::function<void(const SDL_Event &event)> on_event;
+    // Every pass of the event loop (about 60 per second), after the runtime metrics are updated
+    std::function<void()> on_tick;
 };
 
 // Boots launch_request in an SDL window and runs it until the app exits or the window is closed,

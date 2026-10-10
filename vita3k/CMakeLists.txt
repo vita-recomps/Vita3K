@@ -465,3 +465,19 @@ if(TRACY_ENABLE_ON_CORE_COMPONENTS)
 	# Enable Tracy profiling on the main compilation target
 	target_link_libraries(vita3k PRIVATE tracy)
 endif()
+
+# ss-delta: Soul Sacrifice Delta on the SDL frontend, without the Qt interface (ss-delta/main.cpp).
+# It runs from the folder Vita3K.exe is built into, whose data and shaders-builtin it uses.
+if(WIN32)
+	add_executable(ss-delta WIN32
+		ss-delta/main.cpp ss-delta/settings.cpp ss-delta/settings.h
+		interface.cpp interface.h performance.cpp
+		util/src/vc_runtime_checker.cpp
+		resource.h Vita3K.ico Vita3K.rc Windows.manifest)
+	target_link_libraries(ss-delta PRIVATE app audio compat config ctrl dialog display ime lang gdbstub gxm io miniz modules motion packages patch renderer sdl-frontend shader touch util psvpfsparser pugixml::pugixml SDL3::SDL3 Version)
+	if(USE_DISCORD_RICH_PRESENCE)
+		target_link_libraries(ss-delta PRIVATE discord-rpc)
+	endif()
+	set_target_properties(ss-delta PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+	add_dependencies(ss-delta vita3k)
+endif()
