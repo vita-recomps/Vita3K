@@ -877,6 +877,13 @@ void call_indirect(armrecomp::GuestContext *ctx, uint32_t addr) {
         aot_owner(ctx).aot_call_native(addr, fn);
         return;
     }
+    if (!(addr & 1)) {
+        // ARM code without native code may be an import stub reached through a pointer (the
+        // eboot's __tls_get_addr): the import path calls its HLE function or native export
+        // directly, and runs anything else on the JIT as before
+        aot_owner(ctx).aot_call_import(addr);
+        return;
+    }
     aot_owner(ctx).aot_call_guest(addr);
 }
 
