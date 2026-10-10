@@ -22,6 +22,8 @@
 #include <kernel/state.h>
 #include <util/vector_utils.h>
 
+#include <cstdlib>
+
 static SysmodulePaths init_sysmodule_paths() {
     SysmodulePaths p;
 
@@ -198,6 +200,13 @@ bool is_lle_module(const std::string &module_name, EmuEnvState &emuenv) {
     static std::vector<std::string> auto_lle_module_names{};
     if (auto_lle_module_names.empty())
         auto_lle_module_names = init_auto_lle_module_names();
+    // ss-delta: with recompiled code (SSD_AOT), fiber switches go through SceFiber's HLE, which
+    // native code sees as a context change in an import and escapes from; libfiber's own switch,
+    // as guest code on the JIT, would return across native frames. SSD_HLE_FIBER=1 tests the HLE
+    // without recompiled code.
+    static const bool hle_fiber = std::getenv("SSD_HLE_FIBER") || std::getenv("SSD_AOT");
+    if (hle_fiber && module_name == "libfiber")
+        return false;
     if (emuenv.cfg.current_config.modules_mode != ModulesMode::AUTOMATIC) {
         if (std::ranges::contains(emuenv.cfg.current_config.lle_modules, module_name))
             return true;
