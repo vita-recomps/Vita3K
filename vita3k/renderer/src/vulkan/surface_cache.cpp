@@ -465,8 +465,13 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
         // about the strides, I've yet to see a case where the byte stride is different
         return std::nullopt;
 
-    // Check if we can use this surface
-    bool addr_in_range_of_cache = ((address + total_surface_size) <= (ite->first + info.total_bytes + 4));
+    // Check if we can use this surface. A linear texture ends with its last row's last pixel, not a
+    // whole stride further: a tile in the right part of an atlas surface (Soul Sacrifice Delta's bloom
+    // chain) would otherwise overrun it, and be read from memory as it was at the last sync
+    uint32_t texture_end_bytes = total_surface_size;
+    if (tiling == SurfaceTiling::Linear && original_height > 0)
+        texture_end_bytes = stride_bytes * (original_height - 1) + original_width * gxm::bits_per_pixel(base_format) / 8;
+    bool addr_in_range_of_cache = ((address + texture_end_bytes) <= (ite->first + info.total_bytes + 4));
 
     if (ite->first != address && !addr_in_range_of_cache)
         // persona 4 sample from the top of a texture while the bottom wasn't rendered to, the fact that both the surface and
