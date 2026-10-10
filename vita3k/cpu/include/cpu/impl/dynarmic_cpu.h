@@ -19,6 +19,7 @@
 
 #include <dynarmic/interface/A32/a32.h>
 
+#include <cpu/aot.h>
 #include <cpu/aot_abi.h>
 #include <cpu/functions.h>
 #include <cpu/impl/interface.h>
@@ -117,4 +118,6 @@ public:
     // native code calling guest code the JIT runs, and an import stub
     void aot_call_guest(uint32_t target);
     void aot_call_import(uint32_t stub);
+    // native code calling native code through call_indirect, sampled by differential mode
+    void aot_call_native(uint32_t addr, AotFn fn);
 };

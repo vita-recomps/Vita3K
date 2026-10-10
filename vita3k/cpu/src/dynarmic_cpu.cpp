@@ -850,11 +850,31 @@ void DynarmicCPU::aot_call_import(uint32_t stub) {
     guest.r[15] = ret;
 }
 
+// Differential mode also samples calls from native code to native code. A module built with
+// RECOMP_BISECT makes every direct call one, so the whole call tree gets checked, not only the
+// functions the JIT enters.
+void DynarmicCPU::aot_call_native(uint32_t addr, AotFn fn) {
+    const uint64_t diff_interval = aot_diff_interval();
+    if (!diff_interval || ++diff_counter % diff_interval != 0) {
+        fn(&guest);
+        return;
+    }
+    // the JIT is stopped inside a boundary, which resets it afterwards: start the shadow from
+    // the native context
+    aot_sync_from_guest();
+    set_pc(addr);
+    AotShadowResult shadow_result;
+    const bool diff = aot_diff_shadow(addr & ~1u, shadow_result);
+    fn(&guest);
+    if (diff)
+        aot_diff_compare(addr & ~1u, shadow_result);
+}
+
 namespace aot_hooks {
 
 void call_indirect(armrecomp::GuestContext *ctx, uint32_t addr) {
     if (const AotFn fn = aot_lookup(addr)) {
-        fn(ctx);
+        aot_owner(ctx).aot_call_native(addr, fn);
         return;
     }
     aot_owner(ctx).aot_call_guest(addr);

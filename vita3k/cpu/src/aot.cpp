@@ -52,6 +52,7 @@ struct LoadedModule {
     armrecomp::AotInitFn init = nullptr;
     const armrecomp::AotModule *module = nullptr;
     uint32_t lo = 0, hi = 0; // [first entry, last entry]
+    uint32_t end = 0; // end of the last function's code
     std::atomic<Verified> verified{ Verified::unknown };
     std::mutex verify_mutex;
 };
@@ -246,6 +247,7 @@ void aot_init(MemState &mem, Address sentinel) {
             LOG_INFO("AOT: SSD_AOT_RANGE leaves {} of {} functions native", registered, mod.function_count);
         m->lo = mod.function_count ? mod.functions[0].addr & ~1u : 0;
         m->hi = mod.function_count ? mod.functions[mod.function_count - 1].addr & ~1u : 0;
+        m->end = mod.function_count ? m->hi + mod.functions[mod.function_count - 1].size : 0;
         LOG_INFO("AOT: {} ({} functions, {:08x}-{:08x}) from {}", mod.name, mod.function_count, m->lo, m->hi, m->path);
     }
     registry.enabled = !registry.functions.empty();
@@ -416,6 +418,27 @@ std::string aot_counters_text() {
         std::sort(heavy.rbegin(), heavy.rend());
         for (size_t i = 0; i < std::min<size_t>(heavy.size(), 12); i++)
             out += fmt::format("{}{:08x} {}M", i ? ", " : (map == &profile_called ? "; JIT called from native: " : "; JIT runs from: "), heavy[i].second, heavy[i].first / 1000000);
+    }
+    // JIT runs that start in a loaded module's code: the code the module does not cover natively
+    std::map<uint32_t, uint64_t> inside;
+    for (const auto *map : { &profile_called, &profile_top })
+        for (const auto &[key, n] : *map)
+            for (const auto &m : registry.modules)
+                if (m->module && m->lo <= key && key < m->end)
+                    inside[key] += n;
+    if (registry.count_jit_insns) {
+        uint64_t total = 0;
+        for (const auto &[key, n] : inside)
+            total += n;
+        out += fmt::format("; JIT inside native modules: {} instructions from {} addresses", total, inside.size());
+        size_t i = 0;
+        for (const auto &[key, n] : inside) {
+            if (i++ == 16)
+                break;
+            out += fmt::format("{}{:08x} {}", i == 1 ? " (" : ", ", key, n);
+        }
+        if (!inside.empty())
+            out += ")";
     }
     return out;
 }
