@@ -160,9 +160,25 @@ void call_import(EmuEnvState &emuenv, CPUState &cpu, uint32_t nid, SceUID thread
         auto lr = read_lr(cpu);
         log_import_call('H', nid, thread_id, hle_nid_blacklist, lr);
     }
+    // SSD_TRACE_IMPORTS=<file>: every HLE call with its arguments and result, flushed line by line
+    // so that it survives a killed process (ss-delta debugging)
+    static FILE *const trace_file = [] {
+        const char *const env = std::getenv("SSD_TRACE_IMPORTS");
+        return env && *env ? std::fopen(env, "w") : nullptr;
+    }();
+    static std::mutex trace_mutex;
+    const auto trace = [&](const std::string &line) {
+        const std::lock_guard<std::mutex> lock(trace_mutex);
+        std::fputs(line.c_str(), trace_file);
+        std::fflush(trace_file);
+    };
+    if (trace_file)
+        trace(fmt::format("{} > {} ({:08x} {:08x} {:08x} {:08x}) lr {:08x}\n", thread_id, import_name(nid), read_reg(cpu, 0), read_reg(cpu, 1), read_reg(cpu, 2), read_reg(cpu, 3), read_lr(cpu)));
     const ImportFn *fn = resolve_import(nid);
     if (fn) {
         (*fn)(emuenv, cpu, thread_id);
+        if (trace_file)
+            trace(fmt::format("{} < {} -> {:08x}\n", thread_id, import_name(nid), read_reg(cpu, 0)));
     } else {
         const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
         // make the function return 0
