@@ -792,7 +792,18 @@ void DynarmicCPU::aot_call_guest(uint32_t target) {
 void DynarmicCPU::aot_call_import(uint32_t stub) {
     const uint32_t *const words = Ptr<uint32_t>(stub).get(*parent->mem);
     if (words[0] != 0xef000000 || words[1] != 0xe1a0f00e) {
-        // bound to another module's export (movw/movt/bx r12) or something else: run the stub
+        // bound to another module's export: movw r12, #lo; movt r12, #hi; bx r12. When the export
+        // has native code, call it directly (as the stub would, with r12 = target)
+        if ((words[0] & 0x0ff0f000) == 0x0300c000 && (words[1] & 0x0ff0f000) == 0x0340c000 && (words[2] & 0x0fffffff) == 0x012fff1c) {
+            const uint32_t lo = ((words[0] >> 4) & 0xf000) | (words[0] & 0xfff);
+            const uint32_t hi = ((words[1] >> 4) & 0xf000) | (words[1] & 0xfff);
+            const uint32_t target = (hi << 16) | lo;
+            if (const AotFn fn = aot_lookup(target)) {
+                guest.r[12] = target;
+                fn(&guest);
+                return;
+            }
+        }
         aot_call_guest(stub);
         return;
     }
