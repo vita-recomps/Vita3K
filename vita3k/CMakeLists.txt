@@ -473,7 +473,7 @@ if(WIN32)
 		ss-delta/main.cpp ss-delta/settings.cpp ss-delta/settings.h ss-delta/input.cpp ss-delta/input.h
 		interface.cpp interface.h performance.cpp
 		util/src/vc_runtime_checker.cpp
-		resource.h Vita3K.ico Vita3K.rc Windows.manifest)
+		resource.h ss-delta/ss-delta.ico ss-delta/ss-delta.rc Windows.manifest)
 	target_link_libraries(ss-delta PRIVATE app audio compat config ctrl dialog display ime lang gdbstub gxm io miniz modules motion packages patch renderer sdl-frontend shader touch util psvpfsparser pugixml::pugixml SDL3::SDL3 Version)
 	if(USE_DISCORD_RICH_PRESENCE)
 		target_link_libraries(ss-delta PRIVATE discord-rpc)

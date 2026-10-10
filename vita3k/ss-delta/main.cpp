@@ -42,6 +42,7 @@
 #endif
 
 #include <SDL3/SDL.h>
+#include <stb_image.h>
 // provides WinMain for the windowed executable, which calls main below
 #include <SDL3/SDL_main.h>
 
@@ -132,6 +133,9 @@ int main(int argc, char *argv[]) {
     cfg.screen_filter = settings.filter;
     cfg.audio_volume = settings.volume;
 
+    // windows without an icon of their own get the executable's (ss-delta.rc)
+    SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "101");
+    SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "101");
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1");
@@ -178,6 +182,16 @@ int main(int argc, char *argv[]) {
         if (!window)
             return;
         SDL_SetWindowTitle(window, WINDOW_NAME);
+        // the game's own icon, from the player's installed copy
+        const fs::path icon_path = emuenv.vita_fs_path / "ux0" / "app" / TITLE_ID / "sce_sys" / "icon0.png";
+        int icon_w = 0, icon_h = 0, channels = 0;
+        if (stbi_uc *pixels = stbi_load(fs_utils::path_to_utf8(icon_path).c_str(), &icon_w, &icon_h, &channels, 4)) {
+            if (SDL_Surface *icon = SDL_CreateSurfaceFrom(icon_w, icon_h, SDL_PIXELFORMAT_RGBA32, pixels, icon_w * 4)) {
+                SDL_SetWindowIcon(window, icon);
+                SDL_DestroySurface(icon);
+            }
+            stbi_image_free(pixels);
+        }
         SDL_SetWindowSize(window, 960 * settings.window_scale, 544 * settings.window_scale);
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         if (settings.fullscreen)
