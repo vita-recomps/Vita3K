@@ -19,6 +19,7 @@
 
 #include <dynarmic/interface/A32/a32.h>
 
+#include <cpu/aot_abi.h>
 #include <cpu/functions.h>
 #include <cpu/impl/interface.h>
 
@@ -26,6 +27,8 @@
 
 class ArmDynarmicCallback;
 class ArmDynarmicCP15;
+struct AotShadow;
+struct AotShadowResult;
 
 class DynarmicCPU : public CPUInterface {
     friend class ArmDynarmicCallback;
@@ -46,6 +49,18 @@ class DynarmicCPU : public CPUInterface {
     bool cpu_opt;
 
     std::unique_ptr<Dynarmic::A32::Jit> make_jit();
+
+    // recompiled code (cpu/aot.h): the guest registers while native code runs
+    armrecomp::GuestContext guest{};
+    uint64_t jit_ticks = 0; // guest instructions this JIT ran (SSD_AOT_COUNT=1)
+    // differential mode (SSD_AOT_DIFF): a second JIT that runs sampled native calls first
+    std::unique_ptr<AotShadow> shadow;
+    uint64_t diff_counter = 0;
+    bool aot_diff_shadow(uint32_t pc, AotShadowResult &out);
+    void aot_diff_compare(uint32_t pc, const AotShadowResult &s);
+    bool aot_boundary();
+    void aot_run_until_sentinel(uint32_t target);
+    void aot_import(uint32_t nid);
 
 public:
     DynarmicCPU(CPUState *state, std::size_t processor_id, bool cpu_opt);
@@ -95,4 +110,11 @@ public:
     void invalidate_jit_cache(Address start, size_t length) override;
 
     static Dynarmic::ExclusiveMonitor shared_monitor;
+
+    // recompiled code: copy the registers between the JIT and the native context
+    void aot_sync_to_guest();
+    void aot_sync_from_guest();
+    // native code calling guest code the JIT runs, and an import stub
+    void aot_call_guest(uint32_t target);
+    void aot_call_import(uint32_t stub);
 };

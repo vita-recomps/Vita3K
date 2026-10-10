@@ -1,12 +1,16 @@
 set(SOURCE_LIST
 include/cpu/state.h
+include/cpu/aot.h
+include/cpu/aot_abi.h
 include/cpu/common.h
 include/cpu/functions.h
+include/cpu/impl/aot_hooks.h
 include/cpu/impl/dynarmic_cpu.h
 include/cpu/impl/interface.h
 include/cpu/disasm/functions.h
 include/cpu/disasm/state.h
 
+src/aot.cpp
 src/disasm.cpp
 src/cpu.cpp
 src/dynarmic_cpu.cpp

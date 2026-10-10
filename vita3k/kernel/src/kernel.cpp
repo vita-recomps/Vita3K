@@ -19,6 +19,7 @@
 #include <tracy/Tracy.hpp>
 #endif
 
+#include <cpu/aot.h>
 #include <cpu/common.h>
 #include <kernel/state.h>
 #include <mem/functions.h>
@@ -106,6 +107,13 @@ bool KernelState::init(MemState &mem, const CallImportFunc &call_import, bool cp
     halt_ptr[1] = 0xBF30; // WFI
     halt_instruction_pc = halt_instruction.get() | 1; // thumb mode pc
 
+    // Recompiled modules (SSD_AOT), if any
+    aot_sentinel = alloc_block(mem, 4, "aot_sentinel");
+    const auto sentinel_ptr = aot_sentinel.get_ptr<uint16_t>().get(mem);
+    sentinel_ptr[0] = 0xBF00; // NOP
+    sentinel_ptr[1] = 0xBF30; // WFI
+    aot_init(mem, aot_sentinel.get());
+
     return true;
 }
 
@@ -176,7 +184,16 @@ ThreadStatePtr KernelState::create_thread(MemState &mem, const char *name, Ptr<c
     params.thid = thread->id;
 
     params.host_may_destroy_params = SDL_CreateSemaphore(0);
-    SDL_DetachThread(SDL_CreateThread(&thread_function, thread->name.c_str(), &params));
+    // Recompiled code runs guest calls as host calls: give it a deep host stack (reserved, not
+    // committed)
+    const SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER, reinterpret_cast<void *>(&thread_function));
+    SDL_SetStringProperty(props, SDL_PROP_THREAD_CREATE_NAME_STRING, thread->name.c_str());
+    SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_USERDATA_POINTER, &params);
+    if (aot_enabled())
+        SDL_SetNumberProperty(props, SDL_PROP_THREAD_CREATE_STACKSIZE_NUMBER, 64 * 1024 * 1024);
+    SDL_DetachThread(SDL_CreateThreadWithProperties(props));
+    SDL_DestroyProperties(props);
     SDL_WaitSemaphore(params.host_may_destroy_params);
     SDL_DestroySemaphore(params.host_may_destroy_params);
 
@@ -267,6 +284,9 @@ void KernelState::deinit(MemState &mem) {
 
     halt_instruction = nullptr;
     halt_instruction_pc = 0;
+
+    aot_deinit();
+    aot_sentinel = nullptr;
 
     process_param = nullptr;
     client_vtable = Ptr<void>(0);

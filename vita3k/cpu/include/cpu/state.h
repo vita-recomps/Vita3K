@@ -23,6 +23,7 @@
 #include <util/types.h>
 
 #include <atomic>
+#include <functional>
 
 struct CPUState {
     CPUState() = default;
@@ -34,6 +35,12 @@ struct CPUState {
     CPUInterfacePtr cpu;
     bool svc_called;
     uint32_t svc;
+
+    // Recompiled code (cpu/aot.h). Native code calls HLE imports itself, through this handler,
+    // instead of returning to the thread's run loop; aot_unwind asks it to abandon its frames
+    // because the thread is exiting.
+    std::function<void(CPUState &, uint32_t nid)> import_handler;
+    std::atomic<bool> aot_unwind{ false };
 
     // Exception handler support (kubridge abort handlers)
     // These are set by the page fault callback (signal-safe atomics)

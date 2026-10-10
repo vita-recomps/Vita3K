@@ -147,6 +147,9 @@ struct KernelState {
     Block halt_instruction;
     Address halt_instruction_pc;
 
+    // Return address of native code's calls into the JIT (cpu/aot.h); never executed
+    Block aot_sentinel;
+
     ObjectStore obj_store;
 
     uint64_t start_tick;

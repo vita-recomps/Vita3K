@@ -63,6 +63,10 @@ int ThreadState::init(const char *name, Ptr<const void> entry_point, int init_pr
     if (!cpu) {
         return SCE_KERNEL_ERROR_ERROR;
     }
+    // recompiled code calls imports itself (cpu/aot.h)
+    cpu->import_handler = [this](CPUState &cpu_state, uint32_t nid) {
+        kernel.call_import(cpu_state, nid, id);
+    };
     if (kernel.debugger.watch_code) {
         set_log_code(*cpu, true);
     }
@@ -143,6 +147,7 @@ void ThreadState::exit(SceInt32 status) {
     run_end_callback = true;
     exit_requested = true;
     returned_value = static_cast<uint32_t>(status);
+    cpu->aot_unwind = true;
 }
 
 void ThreadState::exit_delete(bool exit) {
@@ -150,6 +155,7 @@ void ThreadState::exit_delete(bool exit) {
 
     run_end_callback = exit;
     delete_requested = true;
+    cpu->aot_unwind = true;
 
     if (status == ThreadStatus::running) {
         stop(*cpu);
@@ -202,6 +208,9 @@ void ThreadState::run_loop() {
     while (true) {
         // Check if this call-level is done (normal exit, guest return, or delete).
         if (exit_requested || guest_returned || delete_requested) {
+            // native frames are gone once the top level sees the exit
+            if (top_level)
+                cpu->aot_unwind = false;
             // Top-level fires the end callback and parks dormant
             if (top_level && status != ThreadStatus::dormant) {
                 run_thread_end_callback();
