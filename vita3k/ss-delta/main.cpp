@@ -20,6 +20,7 @@
 // to the executable. The recompiled modules (ssd_aot_<module>.dll, generated locally from the
 // player's own dump) are loaded from the same folder.
 
+#include "input.h"
 #include "settings.h"
 
 #include <app/functions.h>
@@ -147,6 +148,12 @@ int main(int argc, char *argv[]) {
     }
     if (emuenv.cfg.controller_binds.size() != 15 || emuenv.cfg.controller_axis_binds.size() != 6)
         app::reset_controller_binding(emuenv);
+    {
+        std::vector<std::string> binding_warnings;
+        ss_delta::apply_bindings(emuenv.cfg, settings.keyboard, settings.gamepad, binding_warnings);
+        for (const auto &line : binding_warnings)
+            LOG_WARN("ss-delta.ini: {}", line);
+    }
 
     init_libraries(emuenv);
     if (!app::init_apps_list(emuenv)) {
@@ -163,6 +170,7 @@ int main(int argc, char *argv[]) {
 
     // window: size and fullscreen from the settings, F11 or Alt+Enter switch, frame rate in the title
     SDL_Window *window = nullptr;
+    ss_delta::Keyboard keyboard;
     auto last_title = std::chrono::steady_clock::now();
     sdl_frontend::Hooks hooks;
     hooks.on_window = [&](SDL_Window *w) {
@@ -188,8 +196,15 @@ int main(int argc, char *argv[]) {
         };
         switch (event.type) {
         case SDL_EVENT_KEY_DOWN:
-            if (!event.key.repeat && (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT))))
+            if (event.key.repeat)
+                break;
+            if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)))
                 SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+            else
+                keyboard.key(emuenv, event.key.scancode, true);
+            break;
+        case SDL_EVENT_KEY_UP:
+            keyboard.key(emuenv, event.key.scancode, false);
             break;
         case SDL_EVENT_MOUSE_MOTION:
             set_mouse(event.motion.x, event.motion.y);
@@ -208,6 +223,7 @@ int main(int argc, char *argv[]) {
             touch.renderer_focused = true;
             break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
+            keyboard.release_all(emuenv);
             touch.renderer_focused = false;
             touch.mouse_button_left = false;
             touch.mouse_button_right = false;

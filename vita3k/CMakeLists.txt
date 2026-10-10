@@ -470,7 +470,7 @@ endif()
 # It runs from the folder Vita3K.exe is built into, whose data and shaders-builtin it uses.
 if(WIN32)
 	add_executable(ss-delta WIN32
-		ss-delta/main.cpp ss-delta/settings.cpp ss-delta/settings.h
+		ss-delta/main.cpp ss-delta/settings.cpp ss-delta/settings.h ss-delta/input.cpp ss-delta/input.h
 		interface.cpp interface.h performance.cpp
 		util/src/vc_runtime_checker.cpp
 		resource.h Vita3K.ico Vita3K.rc Windows.manifest)

@@ -20,6 +20,7 @@
 
 #include <util/fs.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,9 @@ struct Settings {
     // [debug]
     int log_level = 2; // spdlog: 0 trace ... 6 off
     bool validation_layer = false;
+
+    // [keyboard] and [gamepad]: Vita button -> keys / gamepad button, applied by input.cpp
+    std::map<std::string, std::string> keyboard, gamepad;
 
     std::vector<std::string> warnings; // lines that could not be used
 };

@@ -63,6 +63,50 @@ enabled = true
 log_level = info
 ; The Vulkan validation layer (needs the Vulkan SDK; slow).
 validation_layer = false
+
+[keyboard]
+; Vita button = key(s), up to two, separated by commas. Key names: A-Z, 0-9, Up, Down, Left,
+; Right, Return, Space, Tab, Backspace, Escape, Left Shift, Right Shift, Left Ctrl, Right Ctrl,
+; Left Alt, Right Alt, F1-F12, Keypad 0-9, or the W3C key codes (Comma, Period, Slash, Semicolon,
+; Quote, BracketLeft, Minus, Equal ...). The mouse is the touchscreen: left button front, right
+; button rear.
+cross = X
+circle = C
+square = Z
+triangle = V
+l = Q
+r = E
+start = Return
+select = Right Shift
+up = Up
+down = Down
+left = Left
+right = Right
+analog_up = W
+analog_down = S
+analog_left = A
+analog_right = D
+right_analog_up = I
+right_analog_down = K
+right_analog_left = J
+right_analog_right = L
+
+[gamepad]
+; Vita button = one gamepad button: south, east, west, north (the face buttons; on an Xbox pad
+; A, B, X, Y), leftshoulder, rightshoulder, start, back, guide, dpup, dpdown, dpleft, dpright,
+; leftstick, rightstick. The gamepad's sticks are the Vita's sticks.
+cross = south
+circle = east
+square = west
+triangle = north
+l = leftshoulder
+r = rightshoulder
+start = start
+select = back
+up = dpup
+down = dpdown
+left = dpleft
+right = dpright
 )";
 
 std::string trim(const std::string &s) {
@@ -162,6 +206,12 @@ Settings load_settings(const fs::path &dir) {
             out.warnings.push_back("debug.log_level = " + *v);
     }
     get_bool("debug.validation_layer", out.validation_layer);
+    for (const auto &[key, value] : values) {
+        if (key.starts_with("keyboard."))
+            out.keyboard[key.substr(9)] = value;
+        else if (key.starts_with("gamepad."))
+            out.gamepad[key.substr(8)] = value;
+    }
     return out;
 }
 
