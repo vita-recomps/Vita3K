@@ -630,10 +630,6 @@ namespace {
 
 constexpr auto AOT_HALT = Dynarmic::HaltReason::UserDefined7;
 
-AotOwner &aot_owner(armrecomp::GuestContext *ctx) {
-    return *static_cast<AotOwner *>(ctx->embedder);
-}
-
 } // namespace
 
 int DynarmicCPU::run() {
@@ -862,39 +858,6 @@ void DynarmicCPU::aot_call_native(uint32_t addr, AotFn fn) {
         aot_diff_compare(addr & ~1u, shadow_result);
 }
 
-namespace aot_hooks {
-
-void call_indirect(armrecomp::GuestContext *ctx, uint32_t addr) {
-    if (const AotFn fn = aot_lookup(addr)) {
-        aot_owner(ctx).aot_call_native(addr, fn);
-        return;
-    }
-    if (!(addr & 1)) {
-        // ARM code without native code may be an import stub reached through a pointer (the
-        // eboot's __tls_get_addr): the import path calls its HLE function or native export
-        // directly, and runs anything else on the JIT as before
-        aot_owner(ctx).aot_call_import(addr);
-        return;
-    }
-    aot_owner(ctx).aot_call_guest(addr);
-}
-
-void call_import(armrecomp::GuestContext *ctx, uint32_t stub_addr) {
-    aot_owner(ctx).aot_call_import(stub_addr);
-}
-
-void escape(armrecomp::GuestContext *, uint32_t pc) {
-    aot_count_escape(pc);
-    throw AotEscape{ pc };
-}
-
-void unsupported(armrecomp::GuestContext *, uint32_t pc) {
-    LOG_ERROR("AOT: no native code for the instruction at {}", log_hex(pc));
-    aot_count_escape(pc);
-    throw AotEscape{ pc };
-}
-
-} // namespace aot_hooks
 
 int DynarmicCPU::step() {
     parent->svc_called = false;

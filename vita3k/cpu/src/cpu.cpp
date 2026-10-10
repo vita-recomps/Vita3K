@@ -18,7 +18,9 @@
 #include <cpu/disasm/functions.h>
 #include <cpu/functions.h>
 #include <cpu/aot.h>
+#ifdef VITA3K_DYNARMIC
 #include <cpu/impl/dynarmic_cpu.h>
+#endif
 #include <cpu/impl/native_cpu.h>
 #include <cpu/impl/interface.h>
 #include <cpu/state.h>
@@ -49,11 +51,16 @@ CPUStatePtr init_cpu(bool cpu_opt, SceUID thread_id, std::size_t processor_id, M
         return CPUStatePtr();
     }
 
-    // ss-delta: SSD_AOT_NATIVE=1 runs threads on recompiled code alone, without the JIT
+    // ss-delta: SSD_AOT_NATIVE=1 runs threads on recompiled code alone, without the JIT; a build
+    // without the JIT (VITA3K_DYNARMIC=OFF) always does
+#ifdef VITA3K_DYNARMIC
     if (aot_native_cpu())
         state->cpu = std::make_unique<NativeCPU>(state.get(), processor_id);
     else
         state->cpu = std::make_unique<DynarmicCPU>(state.get(), processor_id, cpu_opt);
+#else
+    state->cpu = std::make_unique<NativeCPU>(state.get(), processor_id);
+#endif
 
     return state;
 }

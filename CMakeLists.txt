@@ -158,6 +158,8 @@ macro(boost_compile)
 	endif()
 endmacro(boost_compile)
 
+# ss-delta: without the JIT only recompiled code runs (cpu/impl/native_cpu.h)
+option(VITA3K_DYNARMIC "Build the dynarmic JIT" ON)
 option(VITA3K_FORCE_CUSTOM_BOOST "Force Vita3K build process to use the Boost version included with the repository" OFF)
 option(VITA3K_FORCE_SYSTEM_BOOST "Force Vita3K build process to use the Boost version in the system and CMake's default paths and ignore the Boost version included with Vita3K" OFF)
 
