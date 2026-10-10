@@ -24,6 +24,7 @@
 #include <DbgHelp.h>
 #endif
 
+#include <csignal>
 #include <spdlog/async.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/dup_filter_sink.h>
@@ -183,6 +184,8 @@ void rebuild_default_logger() {
 // Log the faulting thread's call stack (module+offset, plus the symbol when a
 // PDB is found) so crashes inside drivers can be traced to their caller.
 // Unwinding uses the OS unwind tables, which works without DbgHelp.
+static bool stack_to_stderr = false;
+
 static void log_stack_trace(const CONTEXT *ctx) noexcept {
     const HANDLE process = GetCurrentProcess();
     static bool sym_ready = false;
@@ -214,6 +217,11 @@ static void log_stack_trace(const CONTEXT *ctx) noexcept {
         DWORD64 displacement = 0;
         IMAGEHLP_LINE64 line{ sizeof(IMAGEHLP_LINE64) };
         DWORD line_displacement = 0;
+        if (stack_to_stderr) {
+            const bool named = sym_ready && SymFromAddr(process, pc, &displacement, symbol);
+            fprintf(stderr, "  #%02d %s+0x%llx %s+0x%llx\n", i, module_short, (unsigned long long)offset, named ? symbol->Name : "?", (unsigned long long)displacement);
+            fflush(stderr);
+        }
         if (sym_ready && SymFromAddr(process, pc, &displacement, symbol)) {
             if (SymGetLineFromAddr64(process, pc, &line_displacement, &line))
                 LOG_CRITICAL("  #{:02} {}+{} {}+{} ({}:{})", i, module_short, log_hex(offset), symbol->Name, log_hex(displacement), line.FileName, line.LineNumber);
@@ -288,10 +296,22 @@ static LONG WINAPI exception_handler(PEXCEPTION_POINTERS pExp) noexcept {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// abort() (failed asserts, std::terminate) logs the calling stack too
+static void abort_handler(int) {
+    CONTEXT context{};
+    RtlCaptureContext(&context);
+    LOG_CRITICAL("abort() called");
+    fprintf(stderr, "abort() called\n");
+    stack_to_stderr = true; // the asynchronous log may not get written before the process ends
+    log_stack_trace(&context);
+    flush();
+}
+
 void register_log_exception_handler() {
     if (!AddVectoredExceptionHandler(0, exception_handler)) {
         LOG_CRITICAL("Failed to register an exception handler");
     }
+    signal(SIGABRT, abort_handler);
 }
 
 #else
