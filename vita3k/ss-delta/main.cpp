@@ -28,6 +28,7 @@
 #include <config/version.h>
 #include <display/state.h>
 #include <emuenv/state.h>
+#include <ime/functions.h>
 #include <modules/module_parent.h>
 #include <sdl-frontend/session.h>
 #include <touch/state.h>
@@ -216,6 +217,17 @@ int main(int argc, char *argv[]) {
         }
     };
     hooks.on_tick = [&] {
+        // typed text reaches the game's keyboard dialogs (the player name) only while SDL's text
+        // input is on; the session handles Enter, Backspace and Escape itself
+        if (window) {
+            const bool ime = is_any_ime_active(emuenv);
+            if (ime != SDL_TextInputActive(window)) {
+                if (ime)
+                    SDL_StartTextInput(window);
+                else
+                    SDL_StopTextInput(window);
+            }
+        }
         const auto now = std::chrono::steady_clock::now();
         if (!window || now - last_title < std::chrono::milliseconds(500))
             return;
