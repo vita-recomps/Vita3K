@@ -17,7 +17,9 @@
 
 #include <cpu/disasm/functions.h>
 #include <cpu/functions.h>
+#include <cpu/aot.h>
 #include <cpu/impl/dynarmic_cpu.h>
+#include <cpu/impl/native_cpu.h>
 #include <cpu/impl/interface.h>
 #include <cpu/state.h>
 #include <mem/ptr.h>
@@ -47,7 +49,11 @@ CPUStatePtr init_cpu(bool cpu_opt, SceUID thread_id, std::size_t processor_id, M
         return CPUStatePtr();
     }
 
-    state->cpu = std::make_unique<DynarmicCPU>(state.get(), processor_id, cpu_opt);
+    // ss-delta: SSD_AOT_NATIVE=1 runs threads on recompiled code alone, without the JIT
+    if (aot_native_cpu())
+        state->cpu = std::make_unique<NativeCPU>(state.get(), processor_id);
+    else
+        state->cpu = std::make_unique<DynarmicCPU>(state.get(), processor_id, cpu_opt);
 
     return state;
 }

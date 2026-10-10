@@ -5,8 +5,10 @@ include/cpu/aot_abi.h
 include/cpu/common.h
 include/cpu/functions.h
 include/cpu/impl/aot_hooks.h
+include/cpu/impl/aot_owner.h
 include/cpu/impl/dynarmic_cpu.h
 include/cpu/impl/interface.h
+include/cpu/impl/native_cpu.h
 include/cpu/disasm/functions.h
 include/cpu/disasm/state.h
 
@@ -14,6 +16,7 @@ src/aot.cpp
 src/disasm.cpp
 src/cpu.cpp
 src/dynarmic_cpu.cpp
+src/native_cpu.cpp
 )
 
 add_library(

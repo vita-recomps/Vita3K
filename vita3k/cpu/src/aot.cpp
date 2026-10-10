@@ -65,6 +65,7 @@ struct Registry {
     std::unordered_map<uint32_t, std::pair<AotFn, LoadedModule *>> resumes;
     MemState *mem = nullptr;
     Address sentinel = 0;
+    Address halt = 0;
     bool enabled = false;
     bool count_jit_insns = false;
 };
@@ -269,6 +270,22 @@ bool aot_enabled() {
 
 Address aot_sentinel() {
     return registry.sentinel;
+}
+
+void aot_set_halt(Address halt) {
+    registry.halt = halt;
+}
+
+Address aot_halt() {
+    return registry.halt;
+}
+
+bool aot_native_cpu() {
+    static const bool requested = [] {
+        const char *const env = std::getenv("SSD_AOT_NATIVE");
+        return env && std::string(env) == "1";
+    }();
+    return requested && registry.enabled;
 }
 
 namespace {

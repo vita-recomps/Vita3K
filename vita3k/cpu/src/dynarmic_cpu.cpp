@@ -628,19 +628,10 @@ void DynarmicCPU::aot_diff_compare(uint32_t pc, const AotShadowResult &s) {
 
 namespace {
 
-// Native code jumped somewhere it cannot continue (aot_hooks::escape): the JIT continues from pc
-// and the native frames since the last boundary are abandoned.
-struct AotEscape {
-    uint32_t pc;
-};
-
-// The thread is exiting (CPUState::aot_unwind): abandon every native frame up to run().
-struct AotUnwind {};
-
 constexpr auto AOT_HALT = Dynarmic::HaltReason::UserDefined7;
 
-DynarmicCPU &aot_owner(armrecomp::GuestContext *ctx) {
-    return *static_cast<DynarmicCPU *>(ctx->embedder);
+AotOwner &aot_owner(armrecomp::GuestContext *ctx) {
+    return *static_cast<AotOwner *>(ctx->embedder);
 }
 
 } // namespace
@@ -690,7 +681,7 @@ void DynarmicCPU::aot_sync_to_guest() {
     guest.fpscr = jit->Fpscr();
     guest.tpidruro = cp15->get_tpidruro();
     guest.excl_valid = 0;
-    guest.embedder = this;
+    guest.embedder = static_cast<AotOwner *>(this);
 }
 
 void DynarmicCPU::aot_sync_from_guest() {
@@ -700,6 +691,7 @@ void DynarmicCPU::aot_sync_from_guest() {
     jit->SetCpsr(cpsr);
     memcpy(jit->ExtRegs().data(), guest.vfp.s, sizeof(guest.vfp));
     jit->SetFpscr(guest.fpscr);
+    cp15->set_tpidruro(guest.tpidruro); // kernel modules write it (mcr)
 }
 
 // The JIT stopped at a native entry or at the sentinel (true). Runs the native function and puts

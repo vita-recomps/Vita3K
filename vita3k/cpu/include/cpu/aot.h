@@ -41,6 +41,11 @@ void aot_deinit();
 
 bool aot_enabled();
 Address aot_sentinel();
+// the kernel's halt instruction (guest code ends a thread or a callback by returning to it)
+void aot_set_halt(Address halt);
+Address aot_halt();
+// SSD_AOT_NATIVE=1 with recompiled modules: threads run on NativeCPU, without the JIT
+bool aot_native_cpu();
 
 // The native function for a guest entry address (bit 0 set for Thumb), or null. A module's
 // functions become visible once its code has been checked against guest memory.

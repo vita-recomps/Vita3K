@@ -22,6 +22,7 @@
 #include <cpu/aot.h>
 #include <cpu/aot_abi.h>
 #include <cpu/functions.h>
+#include <cpu/impl/aot_owner.h>
 #include <cpu/impl/interface.h>
 
 #include <memory>
@@ -31,7 +32,7 @@ class ArmDynarmicCP15;
 struct AotShadow;
 struct AotShadowResult;
 
-class DynarmicCPU : public CPUInterface {
+class DynarmicCPU : public CPUInterface, public AotOwner {
     friend class ArmDynarmicCallback;
 
     CPUState *parent;
@@ -116,8 +117,8 @@ public:
     void aot_sync_to_guest();
     void aot_sync_from_guest();
     // native code calling guest code the JIT runs, and an import stub
-    void aot_call_guest(uint32_t target);
-    void aot_call_import(uint32_t stub);
+    void aot_call_guest(uint32_t target) override;
+    void aot_call_import(uint32_t stub) override;
     // native code calling native code through call_indirect, sampled by differential mode
-    void aot_call_native(uint32_t addr, AotFn fn);
+    void aot_call_native(uint32_t addr, AotFn fn) override;
 };

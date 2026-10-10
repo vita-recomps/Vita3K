@@ -106,6 +106,7 @@ bool KernelState::init(MemState &mem, const CallImportFunc &call_import, bool cp
     halt_ptr[0] = 0xBF00; // NOP
     halt_ptr[1] = 0xBF30; // WFI
     halt_instruction_pc = halt_instruction.get() | 1; // thumb mode pc
+    aot_set_halt(halt_instruction.get());
 
     // Recompiled modules (SSD_AOT), if any
     aot_sentinel = alloc_block(mem, 4, "aot_sentinel");
