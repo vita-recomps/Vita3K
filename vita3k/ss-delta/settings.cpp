@@ -57,6 +57,10 @@ volume = 100
 [recompiled]
 ; Run the recompiled modules natively (false: everything on the JIT, for comparison).
 enabled = true
+; Keep the JIT (dynarmic) for any guest code that has no native code. Off: the game runs on
+; native code alone, and stops with "no native code" in ss-delta/vita3k.log if it ever needs
+; code that was not recompiled; turn this on then.
+jit = false
 
 [debug]
 ; Log detail in ss-delta/vita3k.log: trace, debug, info, warn, error, critical, off.
@@ -197,6 +201,7 @@ Settings load_settings(const fs::path &dir) {
     }
     get_number("audio.volume", out.volume, 0, 100);
     get_bool("recompiled.enabled", out.use_recompiled);
+    get_bool("recompiled.jit", out.jit);
     if (const auto v = get("debug.log_level")) {
         static const std::vector<std::string> levels{ "trace", "debug", "info", "warn", "error", "critical", "off" };
         const auto it = std::find(levels.begin(), levels.end(), string_utils::tolower(*v));

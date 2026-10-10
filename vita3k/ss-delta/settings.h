@@ -40,6 +40,7 @@ struct Settings {
     int volume = 100;
     // [recompiled]
     bool use_recompiled = true;
+    bool jit = false; // keep the JIT for guest code without native code (NativeCPU otherwise)
     // [debug]
     int log_level = 2; // spdlog: 0 trace ... 6 off
     bool validation_layer = false;

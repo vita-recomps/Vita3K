@@ -29,6 +29,7 @@
 #include <config/version.h>
 #include <display/state.h>
 #include <emuenv/state.h>
+#include <kernel/state.h>
 #include <ime/functions.h>
 #include <modules/module_parent.h>
 #include <sdl-frontend/session.h>
@@ -110,6 +111,16 @@ int main(int argc, char *argv[]) {
         const std::string modules = select_recompiled_modules(settings.recompiled);
         LOG_INFO_IF(!modules.empty(), "Recompiled modules: {}", modules);
         LOG_WARN_IF(modules.empty(), "No recompiled modules in {}: everything runs on the JIT", settings.recompiled);
+        // the native CPU (no JIT) unless [recompiled] jit = true; SSD_AOT_NATIVE set beforehand wins
+        if (!modules.empty() && !settings.jit && !std::getenv("SSD_AOT_NATIVE")) {
+#ifdef _WIN32
+            _putenv_s("SSD_AOT_NATIVE", "1");
+#else
+            setenv("SSD_AOT_NATIVE", "1", 1);
+#endif
+        }
+        LOG_INFO("CPU: {}", !modules.empty() && std::getenv("SSD_AOT_NATIVE") && std::string(std::getenv("SSD_AOT_NATIVE")) == "1"
+                ? "native code only (NativeCPU)" : "JIT with native code");
     }
 
     Config cfg{};
@@ -160,6 +171,11 @@ int main(int argc, char *argv[]) {
         for (const auto &line : binding_warnings)
             LOG_WARN("ss-delta.ini: {}", line);
     }
+
+    // SSD_DUMP_ELFS: write every module as loaded (decrypted, relocated) to ss-delta/elfdumps/, the
+    // input for recompiling the firmware modules the game loads (docs/05-recompiler.md in ss-delta)
+    if (std::getenv("SSD_DUMP_ELFS"))
+        emuenv.kernel.debugger.dump_elfs = true;
 
     init_libraries(emuenv);
     if (!app::init_apps_list(emuenv)) {
