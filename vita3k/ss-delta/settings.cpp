@@ -163,7 +163,12 @@ Settings load_settings(const fs::path &dir) {
     {
         fs::ifstream file(path);
         std::string line, section;
+        bool first_line = true;
         while (std::getline(file, line)) {
+            // a UTF-8 byte order mark, as Notepad and PowerShell may write
+            if (first_line && line.starts_with("\xEF\xBB\xBF"))
+                line.erase(0, 3);
+            first_line = false;
             line = trim(line);
             if (line.empty() || line[0] == ';' || line[0] == '#')
                 continue;
