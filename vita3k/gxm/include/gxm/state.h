@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <functional>
 #include <gxm/types.h>
 #include <mem/ptr.h>
 #include <threads/queue.h>
@@ -56,6 +57,10 @@ struct MemoryMapInfo {
 
 struct GxmState {
     SceGxmInitializeParams params;
+
+    // called with each program the game registers with the shader patcher, before it is used: a
+    // frontend can adjust a game's shaders here (ss-delta: UV scales for its full-resolution mode)
+    std::function<void(SceGxmProgram &program)> on_program_registered;
 
     Queue<DisplayCallback> display_queue;
     SceUID display_queue_thread;

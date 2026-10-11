@@ -4794,6 +4794,8 @@ EXPORT(int, sceGxmShaderPatcherRegisterProgram, SceGxmShaderPatcher *shaderPatch
 
     SceGxmRegisteredProgram *const rp = programId->get(emuenv.mem);
     rp->program = programHeader;
+    if (emuenv.gxm.on_program_registered)
+        emuenv.gxm.on_program_registered(*const_cast<SceGxmProgram *>(programHeader.get(emuenv.mem)));
 
     return 0;
 }

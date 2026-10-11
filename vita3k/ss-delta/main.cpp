@@ -39,6 +39,8 @@
 #include <mem/ptr.h>
 #include <renderer/state.h>
 #include <ime/functions.h>
+#include <gxm/state.h>
+#include <gxm/types.h>
 #include <io/functions.h>
 #include <io/state.h>
 #include <modules/module_parent.h>
@@ -60,6 +62,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <iterator>
 #include <map>
@@ -194,6 +197,31 @@ void override_boot_config(EmuEnvState &emuenv, const fs::path &dir, const std::m
     const fs::path copy = dir / "boot_config.ini";
     fs::ofstream(copy, std::ios::binary) << out;
     emuenv.io.read_overrides[read_override_key(installed)] = copy;
+}
+
+// With the 3D at 960x544 (full_3d), the game samples its depth buffer through vertex shaders that
+// scale the coordinates by 720/736 and 408/416: right for the 720x408 mode, whose depth texture is
+// padded to whole 32-pixel tiles (1472x832 samples), 2% short at 960x544, which needs no padding.
+// Depth of field and haze then use the depth beside each pixel (bones in the hub blurred). Both
+// values are in the shaders' literal table, a list of {u32 register, f32 value}, as consecutive
+// entries; they are set to 1.0 there.
+void unscale_depth_uvs(SceGxmProgram &program) {
+    constexpr uint32_t x_scale = 0x3f7a6f4e; // 720 / 736
+    constexpr uint32_t y_scale = 0x3f7b13b2; // 408 / 416
+    constexpr uint32_t one = 0x3f800000;
+    uint8_t *const bytes = reinterpret_cast<uint8_t *>(&program);
+    int replaced = 0;
+    for (uint32_t i = 0; i + 12 <= program.size; i += 4) {
+        uint32_t x, y;
+        std::memcpy(&x, bytes + i, 4);
+        std::memcpy(&y, bytes + i + 8, 4);
+        if (x == x_scale && y == y_scale) {
+            std::memcpy(bytes + i, &one, 4);
+            std::memcpy(bytes + i + 8, &one, 4);
+            replaced++;
+        }
+    }
+    LOG_INFO_IF(replaced, "full_3d: depth UV scale set to 1.0 in a {} shader", program.is_vertex() ? "vertex" : "fragment");
 }
 
 // The 60 fps study (docs/03-plan.md Phase 8): the game paces its main loop with a frame timer
@@ -428,6 +456,8 @@ int main(int argc, char *argv[]) {
     for (const auto &[key, value] : settings.boot_config)
         boot_config[key] = value;
     override_boot_config(emuenv, data_dir / "game", boot_config);
+    if (settings.full_3d)
+        emuenv.gxm.on_program_registered = unscale_depth_uvs;
 
     // window: size and fullscreen from the settings, F11 or Alt+Enter switch, frame rate in the title
     SDL_Window *window = nullptr;
