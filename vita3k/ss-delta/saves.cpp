@@ -18,12 +18,14 @@
 #include "saves.h"
 
 #include <emuenv/app_util.h>
+#include <util/log.h>
 #include <util/string_utils.h>
 
 #include <miniz.h>
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
 #include <ctime>
 #include <iterator>
@@ -36,12 +38,15 @@ namespace {
 
 static_assert(sizeof(SceAppUtilSaveDataSlotParam) == 844);
 
-struct SaveFile {
-    const char *name;
-    size_t size;
-};
-// the game's files and their sizes in 1.30 (a check that a source is this game's save)
-constexpr std::array<SaveFile, 2> FILES{ { { "datag0001", 979168 }, { "system", 1556 } } };
+// the game's files and their sizes in 1.30 (a check that a source is this game's save): one
+// datag<slot>.bin per save slot (1-3), and system.bin, shared by the slots (it records the add-ons)
+constexpr size_t DATA_SIZE = 979168;
+constexpr size_t SYSTEM_FILE_SIZE = 1556;
+constexpr int MAX_SLOT = 3;
+
+std::string data_name(int slot, const char *ext) {
+    return fmt::format("datag{:04}{}", slot, ext);
+}
 
 fs::path save_dir(const fs::path &vita_fs) {
     return vita_fs / "ux0" / "user" / "00" / "savedata" / "PCSA00152";
@@ -56,10 +61,10 @@ std::string lower_name(const std::string &path) {
 using Found = std::map<std::string, std::vector<uint8_t>>;
 
 bool wanted(const std::string &name, size_t size) {
-    for (const auto &f : FILES)
-        if ((name == std::string(f.name) + ".bin" || name == std::string(f.name) + ".bak") && size == f.size)
-            return true;
-    return false;
+    const bool bin_or_bak = name.ends_with(".bin") || name.ends_with(".bak");
+    if (name.size() == 13 && name.starts_with("datag") && bin_or_bak && std::isdigit(static_cast<unsigned char>(name[5])))
+        return size == DATA_SIZE;
+    return (name == "system.bin" || name == "system.bak") && size == SYSTEM_FILE_SIZE;
 }
 
 bool read_folder(const fs::path &folder, Found &found, std::string &message) {
@@ -116,14 +121,14 @@ std::string timestamp() {
     return buf;
 }
 
-// Vita3K's record of save slot 1, which the game's load screen lists; the game rewrites it with
+// Vita3K's record of a save slot, which the game's load screen lists; the game rewrites it with
 // its own title and details the next time it saves
-SceAppUtilSaveDataSlotParam slot_param() {
+SceAppUtilSaveDataSlotParam slot_param(int slot) {
     SceAppUtilSaveDataSlotParam param{};
-    std::strncpy(param.title, "Save data 1", sizeof(param.title) - 1);
+    std::strncpy(param.title, fmt::format("Save data {}", slot).c_str(), sizeof(param.title) - 1);
     std::strncpy(param.subTitle, "Imported", sizeof(param.subTitle) - 1);
     std::strncpy(param.iconPath, "app0:/resource/data/icon/us/icon_g_us.png", sizeof(param.iconPath) - 1);
-    param.sizeKiB = (FILES[0].size * 2 + FILES[1].size * 2 + 1023) / 1024;
+    param.sizeKiB = static_cast<SceSize>((DATA_SIZE * 2 + SYSTEM_FILE_SIZE * 2 + 1023) / 1024);
     const auto t = std::time(nullptr);
     std::tm local{};
 #ifdef _WIN32
@@ -142,7 +147,11 @@ SceAppUtilSaveDataSlotParam slot_param() {
 
 } // namespace
 
-bool import_save(const fs::path &vita_fs, const fs::path &source, const fs::path &backup_dir, std::string &message) {
+bool import_save(const fs::path &vita_fs, const fs::path &source, int slot, const fs::path &backup_dir, std::string &message) {
+    if (slot < 1 || slot > MAX_SLOT) {
+        message = fmt::format("there is no slot {}: the game has slots 1 to {}", slot, MAX_SLOT);
+        return false;
+    }
     Found found;
     if (fs::is_directory(source)) {
         if (!read_folder(source, found, message))
@@ -154,19 +163,32 @@ bool import_save(const fs::path &vita_fs, const fs::path &source, const fs::path
         message = fs_utils::path_to_utf8(source) + " is neither a folder nor a zip file";
         return false;
     }
-    for (const auto &f : FILES) {
-        const std::string bin = std::string(f.name) + ".bin", bak = std::string(f.name) + ".bak";
-        if (!found.contains(bin)) {
-            message = "no " + bin + " of " + std::to_string(f.size) + " bytes in " + fs_utils::path_to_utf8(source)
-                + " (is it a Soul Sacrifice Delta 1.30 save, decrypted?)";
-            return false;
+    // the save to import: datag0001, or the only datag file there is
+    std::string source_data;
+    if (found.contains("datag0001.bin"))
+        source_data = "datag0001";
+    else {
+        for (const auto &[name, data] : found) {
+            if (!name.starts_with("datag") || !name.ends_with(".bin"))
+                continue;
+            if (!source_data.empty()) {
+                message = fs_utils::path_to_utf8(source) + " holds several saves (" + source_data + ", " + name.substr(0, 9)
+                    + "); import a folder with one";
+                return false;
+            }
+            source_data = name.substr(0, 9);
         }
-        if (!found.contains(bak))
-            found[bak] = found[bin];
     }
+    if (source_data.empty()) {
+        message = "no datag0001.bin of " + std::to_string(DATA_SIZE) + " bytes in " + fs_utils::path_to_utf8(source)
+            + " (is it a Soul Sacrifice Delta 1.30 save, decrypted?)";
+        return false;
+    }
+    const auto &data_bin = found.at(source_data + ".bin");
+    const auto &data_bak = found.contains(source_data + ".bak") ? found.at(source_data + ".bak") : data_bin;
 
     const fs::path dir = save_dir(vita_fs);
-    // the save there now goes to the backup folder first
+    // the save folder as it is goes to the backup folder first
     if (fs::exists(dir) && !fs::is_empty(dir)) {
         const fs::path backup = backup_dir / timestamp();
         fs::create_directories(backup);
@@ -174,21 +196,26 @@ bool import_save(const fs::path &vita_fs, const fs::path &source, const fs::path
             if (fs::is_regular_file(entry.path()))
                 fs::copy_file(entry.path(), backup / entry.path().filename(), fs::copy_options::overwrite_existing);
         }
-        message = "the previous save is in " + fs_utils::path_to_utf8(backup) + "; ";
+        message = "the save folder as it was is in " + fs_utils::path_to_utf8(backup) + "; ";
     }
     fs::create_directories(dir);
-    for (const auto &[name, data] : found) {
-        if (!write_file(dir / name, data.data(), data.size())) {
-            message += "writing " + name + " failed";
+    const auto param = slot_param(slot);
+    if (!write_file(dir / data_name(slot, ".bin"), data_bin.data(), data_bin.size())
+        || !write_file(dir / data_name(slot, ".bak"), data_bak.data(), data_bak.size())
+        || !write_file(dir / fmt::format("SlotParam_{}.bin", slot), &param, sizeof(param))) {
+        message += "writing the save failed";
+        return false;
+    }
+    // system.bin is shared by the slots: the one there stays; a source's is used when there is none
+    if (!fs::exists(dir / "system.bin") && found.contains("system.bin")) {
+        const auto &sys_bin = found.at("system.bin");
+        const auto &sys_bak = found.contains("system.bak") ? found.at("system.bak") : sys_bin;
+        if (!write_file(dir / "system.bin", sys_bin.data(), sys_bin.size()) || !write_file(dir / "system.bak", sys_bak.data(), sys_bak.size())) {
+            message += "writing system.bin failed";
             return false;
         }
     }
-    const auto param = slot_param();
-    if (!write_file(dir / "SlotParam_1.bin", &param, sizeof(param))) {
-        message += "writing SlotParam_1.bin failed";
-        return false;
-    }
-    message += "imported into " + fs_utils::path_to_utf8(dir);
+    message += fmt::format("imported into slot {} ({})", slot, fs_utils::path_to_utf8(dir));
     return true;
 }
 
@@ -299,20 +326,22 @@ bool unlock_addons(const fs::path &vita_fs, const fs::path &backup_dir, std::str
     return true;
 }
 
-bool export_save(const fs::path &vita_fs, const fs::path &dest, std::string &message) {
+bool export_save(const fs::path &vita_fs, const fs::path &dest, int slot, std::string &message) {
     const fs::path dir = save_dir(vita_fs);
-    fs::create_directories(dest);
-    for (const auto &f : FILES) {
-        for (const char *ext : { ".bin", ".bak" }) {
-            const std::string name = std::string(f.name) + ext;
-            if (!fs::exists(dir / name)) {
-                message = "no save to export: " + fs_utils::path_to_utf8(dir / name) + " is missing";
-                return false;
-            }
-            fs::copy_file(dir / name, dest / name, fs::copy_options::overwrite_existing);
-        }
+    if (!fs::exists(dir / data_name(slot, ".bin"))) {
+        message = fmt::format("no save in slot {} ({} is missing)", slot, fs_utils::path_to_utf8(dir / data_name(slot, ".bin")));
+        return false;
     }
-    message = "exported to " + fs_utils::path_to_utf8(dest);
+    // written as a single save (datag0001), the form a Vita save folder and --import-save use
+    fs::create_directories(dest);
+    for (const char *ext : { ".bin", ".bak" }) {
+        const fs::path from = fs::exists(dir / data_name(slot, ext)) ? dir / data_name(slot, ext) : dir / data_name(slot, ".bin");
+        fs::copy_file(from, dest / data_name(1, ext), fs::copy_options::overwrite_existing);
+        const fs::path sys = dir / (std::string("system") + ext);
+        if (fs::exists(sys))
+            fs::copy_file(sys, dest / (std::string("system") + ext), fs::copy_options::overwrite_existing);
+    }
+    message = fmt::format("slot {} exported to {}", slot, fs_utils::path_to_utf8(dest));
     return true;
 }
 

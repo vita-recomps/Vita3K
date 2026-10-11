@@ -260,12 +260,14 @@ int main(int argc, char *argv[]) {
     //                              ss-delta/elfdumps/ (the input for recompiling), then quit
     //   --vita-fs <folder>         the Vita file system to use instead of ss-delta.ini's
     //   --import-save <folder|zip> copy a save (decrypted, e.g. from a Vita) in, keeping the old one
-    //   --export-save <folder>     copy the save out
+    //   --export-save <folder>     copy a save out
+    //   --slot <1-3>               the game's save slot for the two above (default 1)
     //   --quiet                    no message box for the two above (the result is in the log)
     std::vector<std::string> install_firmware, install_content;
     double dump_elfs_seconds = 0;
     std::string vita_fs_override, import_save_from, export_save_to;
     bool quiet = false;
+    int save_slot = 1;
     for (int i = 1; i < argc; i++) {
         const std::string arg = argv[i];
         const bool has_value = i + 1 < argc;
@@ -281,6 +283,8 @@ int main(int argc, char *argv[]) {
             import_save_from = argv[++i];
         else if (arg == "--export-save" && has_value)
             export_save_to = argv[++i];
+        else if (arg == "--slot" && has_value)
+            save_slot = std::atoi(argv[++i]);
         else if (arg == "--quiet")
             quiet = true;
     }
@@ -311,8 +315,8 @@ int main(int argc, char *argv[]) {
     if (!import_save_from.empty() || !export_save_to.empty()) {
         std::string message;
         const bool ok = !import_save_from.empty()
-            ? ss_delta::import_save(settings.vita_fs, fs_utils::utf8_to_path(import_save_from), data_dir / "save-backups", message)
-            : ss_delta::export_save(settings.vita_fs, fs_utils::utf8_to_path(export_save_to), message);
+            ? ss_delta::import_save(settings.vita_fs, fs_utils::utf8_to_path(import_save_from), save_slot, data_dir / "save-backups", message)
+            : ss_delta::export_save(settings.vita_fs, fs_utils::utf8_to_path(export_save_to), save_slot, message);
         if (ok)
             LOG_INFO("Save: {}", message);
         else

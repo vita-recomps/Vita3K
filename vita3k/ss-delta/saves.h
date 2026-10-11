@@ -27,13 +27,14 @@
 
 namespace ss_delta {
 
-// Copies a save into the Vita file system from a folder or a .zip that holds datag0001.bin and
-// system.bin (in any subfolder; .bak copies optional). The save there is moved to
-// `backup_dir`/<date and time>/ first. Returns false with the reason in `message`.
-bool import_save(const fs::path &vita_fs, const fs::path &source, const fs::path &backup_dir, std::string &message);
+// The game has three save slots. Copies a save into slot `slot` (1-3) from a folder or a .zip that
+// holds a datag<n>.bin (in any subfolder; .bak copies and system.bin optional). The save folder as
+// it was goes to `backup_dir`/<date and time>/ first. system.bin, shared by the slots, is kept if
+// there is one. Returns false with the reason in `message`.
+bool import_save(const fs::path &vita_fs, const fs::path &source, int slot, const fs::path &backup_dir, std::string &message);
 
-// Copies the save's four files to the folder `dest`.
-bool export_save(const fs::path &vita_fs, const fs::path &dest, std::string &message);
+// Copies the save in slot `slot` to the folder `dest`, as datag0001 plus system.bin.
+bool export_save(const fs::path &vita_fs, const fs::path &dest, int slot, std::string &message);
 
 // The add-ons (docs/decisions.md D14 in ss-delta): system.bin records what was bought on PSN as
 // lists of ids. Adds the released add-ons to those lists in the save's system.bin and .bak,
