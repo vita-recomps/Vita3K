@@ -5,6 +5,8 @@
 #include <touch/touch.h>
 
 #include <algorithm>
+#include <mutex>
+#include <vector>
 
 struct TouchState {
     SceTouchSamplingState touch_mode[2] = { SCE_TOUCH_SAMPLING_STATE_STOP, SCE_TOUCH_SAMPLING_STATE_STOP };
@@ -15,6 +17,15 @@ struct TouchState {
     bool mouse_button_right = false;
     bool renderer_focused = false;
     SceTouchPortType touchscreen_port = SCE_TOUCH_PORT_FRONT;
+
+    // fingers a frontend holds at fixed points (keys or buttons standing in for touches), in
+    // touch-panel units (front 1920x1088), reported with the mouse's; set under held_mutex
+    struct HeldTouch {
+        uint16_t x = 0, y = 0;
+        uint8_t id = 0;
+    };
+    std::mutex held_mutex;
+    std::vector<HeldTouch> held[2];
     SceTouchData touch_buffers[MAX_TOUCH_BUFFER_SAVED][2] = {};
     int touch_buffer_idx = 0;
     bool is_touchpad = false;

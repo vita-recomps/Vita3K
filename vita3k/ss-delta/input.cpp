@@ -21,10 +21,12 @@
 #include <ctrl/ctrl.h>
 #include <ctrl/state.h>
 #include <emuenv/state.h>
+#include <touch/state.h>
 #include <util/string_utils.h>
 
 #include <SDL3/SDL_gamepad.h>
 
+#include <algorithm>
 #include <cctype>
 #include <mutex>
 
@@ -237,6 +239,66 @@ void Keyboard::update(EmuEnvState &emuenv) {
     kb.axes[1] = axis(cfg.keyboard_leftstick_up, cfg.keyboard_leftstick_up_alt, cfg.keyboard_leftstick_down, cfg.keyboard_leftstick_down_alt);
     kb.axes[2] = axis(cfg.keyboard_rightstick_left, cfg.keyboard_rightstick_left_alt, cfg.keyboard_rightstick_right, cfg.keyboard_rightstick_right_alt);
     kb.axes[3] = axis(cfg.keyboard_rightstick_up, cfg.keyboard_rightstick_up_alt, cfg.keyboard_rightstick_down, cfg.keyboard_rightstick_down_alt);
+}
+
+void Touches::configure(const std::vector<Settings::TouchBinding> &touches, std::vector<std::string> &warnings) {
+    bindings.clear();
+    for (const auto &touch : touches) {
+        Binding b{ touch.x, touch.y };
+        for (const auto &key : split_list(touch.keys)) {
+            const auto code = parse_key(key);
+            if (code == PhysicalKeyCode::Unbound)
+                warnings.push_back("touch." + touch.name + "_key: unknown key \"" + key + "\"");
+            else if (b.keys.size() < 2)
+                b.keys.push_back(code);
+        }
+        const std::string pad = string_utils::tolower(trim(touch.gamepad));
+        if (pad == "lefttrigger")
+            b.gamepad_axis = SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
+        else if (pad == "righttrigger")
+            b.gamepad_axis = SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
+        else if (!pad.empty()) {
+            const SDL_GamepadButton button = parse_gamepad_button(pad);
+            if (button == SDL_GAMEPAD_BUTTON_INVALID)
+                warnings.push_back("touch." + touch.name + "_gamepad: unknown gamepad button \"" + touch.gamepad + "\"");
+            else
+                b.gamepad_button = button;
+        }
+        bindings.push_back(std::move(b));
+    }
+}
+
+void Touches::update(EmuEnvState &emuenv, const Keyboard &keyboard) {
+    // the touch panel's units: the front panel is 1920x1088 over the 960x544 screen
+    const auto at = [](float x, float y, uint8_t id) {
+        return TouchState::HeldTouch{ static_cast<uint16_t>(x * 2), static_cast<uint16_t>(y * 2), id };
+    };
+    std::vector<TouchState::HeldTouch> held;
+    {
+        const std::lock_guard<std::mutex> lock(emuenv.ctrl.mutex);
+        for (size_t i = 0; i < bindings.size(); i++) {
+            const auto &b = bindings[i];
+            bool down = std::any_of(b.keys.begin(), b.keys.end(), [&](PhysicalKeyCode k) { return keyboard.down(k); });
+            for (const auto &[id, controller] : emuenv.ctrl.controllers) {
+                SDL_Gamepad *pad = controller.controller.get();
+                if (!pad)
+                    continue;
+                if (b.gamepad_button >= 0 && SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(b.gamepad_button)))
+                    down = true;
+                if (b.gamepad_axis >= 0 && SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(b.gamepad_axis)) > 16384)
+                    down = true;
+            }
+            // ids that stay the same while a finger is down, apart from the mouse's (0-127)
+            if (down)
+                held.push_back(at(b.x, b.y, static_cast<uint8_t>(100 + i % 16)));
+        }
+        for (size_t i = 0; i < emuenv.ctrl.injected_touches.size(); i++) {
+            const auto &[x, y] = emuenv.ctrl.injected_touches[i];
+            held.push_back(at(x, y, static_cast<uint8_t>(120 + i % 8)));
+        }
+    }
+    const std::lock_guard<std::mutex> lock(emuenv.touch.held_mutex);
+    emuenv.touch.held[SCE_TOUCH_PORT_FRONT] = std::move(held);
 }
 
 } // namespace ss_delta

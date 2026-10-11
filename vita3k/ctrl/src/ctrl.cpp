@@ -145,6 +145,8 @@ void refresh_controllers(CtrlState &state, EmuEnvState &emuenv) {
 // \\.\pipe\<value> and applies one command per line to CtrlState::injected_state:
 //   hold <button> [<button>...]   hold exactly these buttons ("hold" or "hold none" releases all)
 //   axes <lx> <ly> <rx> <ry>      stick positions in [-1, 1]
+//   touch <x> <y> ... | none      the frontend holds front-touch fingers at these points (960x544)
+//   screenshot <path>             the frontend saves the current frame there, at render resolution
 // Buttons: cross circle square triangle up down left right l r l2 r2 l3 r3 start select.
 // Nothing goes through the window, so automated runs never need keyboard focus.
 static uint32_t parse_injected_button(const std::string &name) {
@@ -187,6 +189,18 @@ static void apply_injected_command(CtrlState &state, const std::string &line) {
             words >> axis;
         std::lock_guard<std::mutex> guard(state.mutex);
         std::copy(std::begin(axes), std::end(axes), state.injected_state.axes);
+    } else if (command == "touch") {
+        // touch <x> <y> [<x> <y>...] holds front-touch fingers at screen points; "touch none" lifts them
+        std::vector<std::pair<float, float>> points;
+        for (float x, y; words >> x >> y;)
+            points.emplace_back(x, y);
+        std::lock_guard<std::mutex> guard(state.mutex);
+        state.injected_touches = std::move(points);
+    } else if (command == "screenshot") {
+        std::string path;
+        std::getline(words >> std::ws, path);
+        std::lock_guard<std::mutex> guard(state.mutex);
+        state.injected_screenshots.push_back(path);
     } else if (!command.empty()) {
         LOG_WARN("Input pipe: unknown command '{}'", line);
     }

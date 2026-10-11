@@ -40,11 +40,15 @@ constexpr const char *DEFAULT_INI = R"(; ss-delta settings. Lines starting with 
 ;recompiled = C:/Games/ss-delta
 
 [display]
+; Draw the 3D at 960x544 like the menus and HUD (the game's own ResoDown 0). false: 720x408,
+; upscaled, as on the Vita.
+full_3d = true
 ; Internal resolution as a multiple of the Vita's 960x544 (1-8, fractions allowed).
 scale = 1
 ; Window size as a multiple of 960x544 (1-4).
 window_scale = 1
-; Start in fullscreen. F11 or Alt+Enter switches while playing.
+; Start in fullscreen. F11 or Alt+Enter switches while playing. F12 saves a screenshot to
+; ss-delta/screenshots/ next to ss-delta.exe.
 fullscreen = false
 vsync = true
 ; How the picture is scaled to the window: Bilinear, Nearest, Bicubic, FXAA, FSR.
@@ -111,6 +115,21 @@ up = dpup
 down = dpdown
 left = dpleft
 right = dpright
+
+[touch]
+; Keys and gamepad buttons that hold a finger on the touchscreen for as long as they are held.
+; Each touch is <name> = x, y (a point on the 960x544 screen), with <name>_key (up to two keys,
+; as in [keyboard]) and <name>_gamepad (one button as in [gamepad], or lefttrigger or
+; righttrigger). The mouse is the touchscreen as well.
+; Black Rite: touch and hold the Black Rite icon, lower left during a quest.
+black_rite = 56, 494
+black_rite_key = F
+black_rite_gamepad = lefttrigger
+
+[boot_config]
+; Engine settings passed to the game's boot_config.ini (Key = value, case as in that file), for
+; experiments; they win over the settings above. The installed file is not changed.
+;FPS = 30
 )";
 
 std::string trim(const std::string &s) {
@@ -151,7 +170,11 @@ Settings load_settings(const fs::path &dir) {
                 out.warnings.push_back(line);
                 continue;
             }
-            values[section + "." + string_utils::tolower(trim(line.substr(0, eq)))] = trim(line.substr(eq + 1));
+            // the game's own keys are case-sensitive: kept as written
+            if (section == "boot_config")
+                out.boot_config[trim(line.substr(0, eq))] = trim(line.substr(eq + 1));
+            else
+                values[section + "." + string_utils::tolower(trim(line.substr(0, eq)))] = trim(line.substr(eq + 1));
         }
     }
 
@@ -185,6 +208,7 @@ Settings load_settings(const fs::path &dir) {
         out.vita_fs = fs_utils::utf8_to_path(*v) / "";
     if (const auto v = get("paths.recompiled"))
         out.recompiled = fs_utils::utf8_to_path(*v);
+    get_bool("display.full_3d", out.full_3d);
     get_number("display.scale", out.scale, 1.0f, 8.0f);
     get_number("display.window_scale", out.window_scale, 1, 4);
     get_bool("display.fullscreen", out.fullscreen);
@@ -211,12 +235,44 @@ Settings load_settings(const fs::path &dir) {
             out.warnings.push_back("debug.log_level = " + *v);
     }
     get_bool("debug.validation_layer", out.validation_layer);
+    get_number("debug.frame_rate", out.frame_rate, 30, 60);
+    get_number("debug.frame_rate_delay", out.frame_rate_delay, 0, 3600);
+    std::map<std::string, Settings::TouchBinding> touches;
     for (const auto &[key, value] : values) {
         if (key.starts_with("keyboard."))
             out.keyboard[key.substr(9)] = value;
         else if (key.starts_with("gamepad."))
             out.gamepad[key.substr(8)] = value;
+        else if (key.starts_with("touch.")) {
+            const std::string name = key.substr(6);
+            if (name.ends_with("_key"))
+                touches[name.substr(0, name.size() - 4)].keys = value;
+            else if (name.ends_with("_gamepad"))
+                touches[name.substr(0, name.size() - 8)].gamepad = value;
+            else {
+                auto &touch = touches[name];
+                char comma = 0;
+                std::istringstream in(value);
+                if (!(in >> touch.x >> comma >> touch.y) || comma != ',' || touch.x < 0 || touch.x >= 960 || touch.y < 0 || touch.y >= 544) {
+                    out.warnings.push_back(key + " = " + value + " (x, y within 960x544)");
+                    touch.x = touch.y = -1;
+                }
+            }
+        }
     }
+    for (auto &[name, touch] : touches) {
+        if (touch.x < 0)
+            continue;
+        if (!values.contains("touch." + name)) {
+            out.warnings.push_back("touch." + name + "_key/_gamepad without touch." + name + " = x, y");
+            continue;
+        }
+        touch.name = name;
+        out.touches.push_back(touch);
+    }
+    // an ss-delta.ini from before [touch] existed: the default's Black Rite binding
+    if (std::none_of(values.begin(), values.end(), [](const auto &kv) { return kv.first.starts_with("touch."); }))
+        out.touches.push_back({ "black_rite", 56, 494, "F", "lefttrigger" });
     return out;
 }
 

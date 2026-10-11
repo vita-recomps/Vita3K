@@ -124,6 +124,11 @@ struct IOState {
     std::unordered_map<std::string, std::string> cachemap;
     bool case_isens_find_enabled = false;
 
+    // host files read in place of others (the key: the host path a read-only open or a stat
+    // resolves to, lexically normal and lower case): a frontend serves changed copies of game
+    // files without touching the installed ones
+    std::map<std::string, fs::path> read_overrides;
+
     std::mutex overlay_mutex;
     SceUID next_overlay_id = 1;
     // overlay in the order they should be applied

@@ -309,6 +309,18 @@ fs::path expand_path(IOState &io, const char *path, const fs::path &vita_fs_path
     return device::construct_emulated_path(device, translated_path, vita_fs_path, io.redirect_stdio).string();
 }
 
+std::string read_override_key(const fs::path &host_path) {
+    return string_utils::tolower(fs_utils::path_to_utf8(host_path.lexically_normal()));
+}
+
+// the host file to read for `host_path` (IOState::read_overrides), or `host_path` itself
+static fs::path apply_read_override(const IOState &io, const fs::path &host_path) {
+    if (io.read_overrides.empty())
+        return host_path;
+    const auto it = io.read_overrides.find(read_override_key(host_path));
+    return it == io.read_overrides.end() ? host_path : it->second;
+}
+
 SceUID open_file(IOState &io, const char *path, const int flags, const fs::path &vita_fs_path, const char *export_name) {
     auto device = device::get_device(path);
     auto device_for_icase = device;
@@ -378,6 +390,12 @@ SceUID open_file(IOState &io, const char *path, const int flags, const fs::path 
     }
 
     const auto normalized_path = device::construct_normalized_path(device, translated_path);
+    if (!(flags & (SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC | SCE_O_APPEND))) {
+        const auto read_path = apply_read_override(io, system_path);
+        if (read_path != system_path)
+            LOG_INFO("{}: {} is read from {}", export_name, path, read_path);
+        system_path = read_path;
+    }
 
     FileStats f{ path, normalized_path, system_path, flags };
     const auto fd = io.next_fd++;
@@ -548,6 +566,7 @@ int stat_file(IOState &io, const char *file, SceIoStat *statp, const fs::path &v
                 return IO_ERROR(SCE_ERROR_ERRNO_ENOENT);
             }
         }
+        file_path = apply_read_override(io, file_path);
         LOG_TRACE_IF(log_file_op && log_file_stat, "{}: Statting file: {} ({})", export_name, file, device::construct_normalized_path(device, translated_path));
     } else { // We have previously opened and defined the location
         const auto fd_file = io.std_files.find(fd);

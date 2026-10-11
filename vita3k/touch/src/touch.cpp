@@ -178,6 +178,18 @@ void touch_vsync_update(EmuEnvState &emuenv) {
             } else {
                 touch.is_touched[port] = false;
             }
+
+            if (emuenv.touch.touch_mode[port]) {
+                std::lock_guard<std::mutex> lock(touch.held_mutex);
+                for (const auto &held : touch.held[port]) {
+                    if (data->reportNum >= SCE_TOUCH_MAX_REPORT)
+                        break;
+                    data->report[data->reportNum].x = held.x;
+                    data->report[data->reportNum].y = held.y;
+                    data->report[data->reportNum].id = held.id;
+                    ++data->reportNum;
+                }
+            }
         }
     }
 

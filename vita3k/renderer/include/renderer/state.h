@@ -126,6 +126,15 @@ struct State {
     std::unique_ptr<std::thread> render_thread;
     std::atomic<bool> render_abort{ false };
 
+    // work a frontend hands to the render thread, which alone uses the GPU queue (a frame dump
+    // from another thread races its submits); run after the next frame is rendered
+    std::mutex render_thread_tasks_mutex;
+    std::vector<std::function<void()>> render_thread_tasks;
+    void run_on_render_thread(std::function<void()> task) {
+        std::lock_guard<std::mutex> lock(render_thread_tasks_mutex);
+        render_thread_tasks.push_back(std::move(task));
+    }
+
     std::vector<ShadersHash> precompile_queue;
     bool precompile_requested = false;
     std::atomic<bool> precompile_complete{ false };

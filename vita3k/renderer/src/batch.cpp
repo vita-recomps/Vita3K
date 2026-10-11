@@ -272,6 +272,15 @@ static void render_loop(renderer::State &state, DisplayState &display, GxmState 
         }
 
         state.render_frame(display, gxm, mem);
+        {
+            std::vector<std::function<void()>> tasks;
+            {
+                std::lock_guard<std::mutex> lock(state.render_thread_tasks_mutex);
+                tasks.swap(state.render_thread_tasks);
+            }
+            for (auto &task : tasks)
+                task();
+        }
         state.swap_window();
         state.async_flip_requested.store(false, std::memory_order_relaxed);
 

@@ -471,6 +471,7 @@ endif()
 if(WIN32)
 	add_executable(ss-delta WIN32
 		ss-delta/main.cpp ss-delta/settings.cpp ss-delta/settings.h ss-delta/input.cpp ss-delta/input.h
+		ss-delta/saves.cpp ss-delta/saves.h
 		interface.cpp interface.h performance.cpp
 		util/src/vc_runtime_checker.cpp
 		resource.h ss-delta/ss-delta.ico ss-delta/ss-delta.rc Windows.manifest)

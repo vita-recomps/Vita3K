@@ -31,6 +31,7 @@ struct Settings {
     fs::path vita_fs; // the Vita file system holding the installed game (ux0/app/PCSA00152)
     fs::path recompiled; // where ssd_aot_<module>.dll are
     // [display]
+    bool full_3d = true; // 3D at 960x544 (boot_config.ini ResoDown 0) instead of 720x408
     float scale = 1.0f; // internal resolution multiplier
     int window_scale = 1; // window size as a multiple of 960x544
     bool fullscreen = false;
@@ -44,9 +45,24 @@ struct Settings {
     // [debug]
     int log_level = 2; // spdlog: 0 trace ... 6 off
     bool validation_layer = false;
+    int frame_rate = 30; // the game's frame timer and display flip rate (study: 30 or 60)
+    int frame_rate_delay = 0; // seconds after start before frame_rate applies (study)
 
     // [keyboard] and [gamepad]: Vita button -> keys / gamepad button, applied by input.cpp
     std::map<std::string, std::string> keyboard, gamepad;
+
+    // [touch]: a finger held on the front touchscreen at a point while its keys or gamepad
+    // button are held (input.cpp)
+    struct TouchBinding {
+        std::string name;
+        float x = 0, y = 0; // 960x544 screen pixels
+        std::string keys; // up to two, as in [keyboard]
+        std::string gamepad; // one button as in [gamepad], or lefttrigger / righttrigger
+    };
+    std::vector<TouchBinding> touches;
+
+    // [boot_config]: keys of the game's boot_config.ini to override, case kept
+    std::map<std::string, std::string> boot_config;
 
     std::vector<std::string> warnings; // lines that could not be used
 };

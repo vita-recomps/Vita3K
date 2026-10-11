@@ -28,6 +28,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
 
 typedef std::shared_ptr<SDL_Gamepad> GamepadPtr;
 typedef std::shared_ptr<SDL_Haptic> HapticPtr;
@@ -76,6 +78,10 @@ struct CtrlState {
     VirtualKeyboardState keyboard_state;
     // buttons and sticks held by an external test driver (VITA3K_INPUT_PIPE, Windows only)
     VirtualKeyboardState injected_state;
+    // PNG paths the test driver asked to save the current frame to (the frontend takes them)
+    std::vector<std::string> injected_screenshots;
+    // front-touch fingers the test driver holds, in 960x544 screen points (the frontend applies them)
+    std::vector<std::pair<float, float>> injected_touches;
 
     std::atomic<bool> overlay_input_intercepted{ false };
 

@@ -19,6 +19,8 @@
 // unlike the Qt interface, does not turn keys into Vita buttons itself).
 #pragma once
 
+#include "settings.h"
+
 #include <input/physical_key.h>
 
 #include <map>
@@ -43,10 +45,29 @@ public:
     void key(EmuEnvState &emuenv, int scancode, bool pressed);
     // the window lost focus: release everything
     void release_all(EmuEnvState &emuenv);
+    bool down(input::PhysicalKeyCode code) const { return pressed.contains(code); }
 
 private:
     void update(EmuEnvState &emuenv);
     std::set<input::PhysicalKeyCode> pressed;
+};
+
+// [touch]: fingers on the front touchscreen while their keys or gamepad button are held, and the
+// ones the test driver holds through the input pipe
+class Touches {
+public:
+    void configure(const std::vector<Settings::TouchBinding> &touches, std::vector<std::string> &warnings);
+    // once a frame: the held fingers into the touch state
+    void update(EmuEnvState &emuenv, const Keyboard &keyboard);
+
+private:
+    struct Binding {
+        float x = 0, y = 0;
+        std::vector<input::PhysicalKeyCode> keys;
+        int gamepad_button = -1; // SDL_GamepadButton
+        int gamepad_axis = -1; // SDL_GamepadAxis (a trigger)
+    };
+    std::vector<Binding> bindings;
 };
 
 } // namespace ss_delta

@@ -22,17 +22,24 @@
 
 #include "../archive.h"
 #include "input.h"
+#include "saves.h"
 #include "settings.h"
 
 #include <app/functions.h>
 #include <app/session_controller.h>
 #include <config/state.h>
 #include <config/version.h>
+#include <ctrl/state.h>
 #include <display/state.h>
 #include <emuenv/state.h>
 #include <packages/functions.h>
 #include <kernel/state.h>
+#include <mem/functions.h>
+#include <mem/ptr.h>
+#include <renderer/state.h>
 #include <ime/functions.h>
+#include <io/functions.h>
+#include <io/state.h>
 #include <modules/module_parent.h>
 #include <sdl-frontend/session.h>
 #include <touch/state.h>
@@ -46,11 +53,18 @@
 
 #include <SDL3/SDL.h>
 #include <stb_image.h>
+#include <stb_image_write.h>
 // provides WinMain for the windowed executable, which calls main below
 #include <SDL3/SDL_main.h>
 
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
+#include <iterator>
+#include <map>
+#include <mutex>
+#include <set>
+#include <thread>
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -87,6 +101,98 @@ std::string select_recompiled_modules(const fs::path &dir) {
     return list;
 }
 
+// the frame on screen at render resolution (the internal resolution times `scale`) as a PNG: read
+// back on the render thread after its next frame (it alone submits to the GPU queue), written on
+// a thread of its own
+void save_frame(EmuEnvState &emuenv, const fs::path &path) {
+    if (!emuenv.renderer)
+        return;
+    renderer::State *const renderer = emuenv.renderer.get();
+    renderer->run_on_render_thread([renderer, &display = emuenv.display, path] {
+        uint32_t width = 0, height = 0;
+        std::vector<uint32_t> frame = renderer->dump_frame(display, width, height);
+        if (frame.empty() || frame.size() != static_cast<size_t>(width) * height) {
+            LOG_WARN("Screenshot: no frame to save");
+            return;
+        }
+        std::thread([frame = std::move(frame), width, height, path]() mutable {
+            for (uint32_t &pixel : frame)
+                pixel |= 0xFF000000;
+            if (path.has_parent_path())
+                fs::create_directories(path.parent_path());
+            const bool ok = stbi_write_png(fs_utils::path_to_utf8(path).c_str(), width, height, 4, frame.data(), width * 4) == 1;
+            LOG_INFO("Screenshot {}x{} {} {}", width, height, ok ? "saved to" : "could not be saved to", path);
+        }).detach();
+    });
+}
+
+// The game reads its engine settings from app0:resource/boot_config.ini, "Key<tab>Value" lines in
+// two blocks (development, then retail). Serves a copy, written to `dir`, in which each key of
+// `values` has the given value everywhere it is set; the installed file stays as it is.
+void override_boot_config(EmuEnvState &emuenv, const fs::path &dir, const std::map<std::string, std::string> &values) {
+    const fs::path installed = emuenv.vita_fs_path / "ux0" / "app" / TITLE_ID / "resource" / "boot_config.ini";
+    fs::ifstream in(installed, std::ios::binary);
+    if (!in) {
+        LOG_WARN("boot_config.ini not found at {}; the game's own settings stay", installed);
+        return;
+    }
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string out;
+    std::set<std::string> found;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find('\n', pos);
+        end = end == std::string::npos ? text.size() : end + 1;
+        std::string line = text.substr(pos, end - pos);
+        const auto tab = line.find('\t');
+        if (tab != std::string::npos) {
+            const auto it = values.find(line.substr(0, tab));
+            if (it != values.end()) {
+                const bool crlf = line.ends_with("\r\n");
+                line = it->first + "\t" + it->second + (crlf ? "\r\n" : "\n");
+                found.insert(it->first);
+            }
+        }
+        out += line;
+        pos = end;
+    }
+    for (const auto &[key, value] : values) {
+        if (!found.contains(key))
+            out += key + "\t" + value + "\r\n";
+        LOG_INFO("boot_config.ini: {} {}", key, value);
+    }
+    fs::create_directories(dir);
+    const fs::path copy = dir / "boot_config.ini";
+    fs::ofstream(copy, std::ios::binary) << out;
+    emuenv.io.read_overrides[read_override_key(installed)] = copy;
+}
+
+// The 60 fps study (docs/03-plan.md Phase 8): the game paces its main loop with a frame timer
+// created for 30 fps (0x812ab888: movs r0, #30), whose period in microseconds is the first u64 of
+// the timer object (*(*0x81c957cc)), and flips every 2nd vblank (threshold at 0x81d3a630). Both
+// are data, so they are changed in guest memory once the game has set them up.
+// Returns true when done.
+bool apply_frame_rate(EmuEnvState &emuenv, int fps) {
+    auto &mem = emuenv.mem;
+    const auto u32 = [&](Address a) -> uint32_t * { return is_valid_addr(mem, a) ? Ptr<uint32_t>(a).get(mem) : nullptr; };
+    uint32_t *const holder = u32(0x81c957cc);
+    if (!holder || !*holder)
+        return false;
+    uint32_t *const timer = u32(*holder);
+    if (!timer || !*timer || !is_valid_addr(mem, *timer + 7))
+        return false;
+    uint64_t *const period = Ptr<uint64_t>(*timer).get(mem);
+    uint32_t *const flip = u32(0x81d3a630);
+    if (*period != 1000000 / 30 || !flip || *flip != 2) {
+        LOG_WARN("frame_rate: unexpected frame timer {} us / flip threshold {}; left alone", *period, flip ? *flip : 0);
+        return true;
+    }
+    *period = 1000000 / fps;
+    *flip = 60 / fps;
+    LOG_INFO("frame_rate: {} fps (frame timer {} us, flip every {} vblank)", fps, *period, *flip);
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -96,9 +202,13 @@ int main(int argc, char *argv[]) {
     //   --dump-elfs <seconds>      run the game that long, writing every module as loaded to
     //                              ss-delta/elfdumps/ (the input for recompiling), then quit
     //   --vita-fs <folder>         the Vita file system to use instead of ss-delta.ini's
+    //   --import-save <folder|zip> copy a save (decrypted, e.g. from a Vita) in, keeping the old one
+    //   --export-save <folder>     copy the save out
+    //   --quiet                    no message box for the two above (the result is in the log)
     std::vector<std::string> install_firmware, install_content;
     double dump_elfs_seconds = 0;
-    std::string vita_fs_override;
+    std::string vita_fs_override, import_save_from, export_save_to;
+    bool quiet = false;
     for (int i = 1; i < argc; i++) {
         const std::string arg = argv[i];
         const bool has_value = i + 1 < argc;
@@ -110,6 +220,12 @@ int main(int argc, char *argv[]) {
             dump_elfs_seconds = std::atof(argv[++i]);
         else if (arg == "--vita-fs" && has_value)
             vita_fs_override = argv[++i];
+        else if (arg == "--import-save" && has_value)
+            import_save_from = argv[++i];
+        else if (arg == "--export-save" && has_value)
+            export_save_to = argv[++i];
+        else if (arg == "--quiet")
+            quiet = true;
     }
 
     Root root_paths;
@@ -134,6 +250,21 @@ int main(int argc, char *argv[]) {
     LOG_INFO("CPU: {}", util::get_system_info());
     for (const auto &line : settings.warnings)
         LOG_WARN("ss-delta.ini: ignored \"{}\"", line);
+
+    if (!import_save_from.empty() || !export_save_to.empty()) {
+        std::string message;
+        const bool ok = !import_save_from.empty()
+            ? ss_delta::import_save(settings.vita_fs, fs_utils::utf8_to_path(import_save_from), data_dir / "save-backups", message)
+            : ss_delta::export_save(settings.vita_fs, fs_utils::utf8_to_path(export_save_to), message);
+        if (ok)
+            LOG_INFO("Save: {}", message);
+        else
+            LOG_ERROR("Save: {}", message);
+        if (!quiet)
+            SDL_ShowSimpleMessageBox(ok ? SDL_MESSAGEBOX_INFORMATION : SDL_MESSAGEBOX_ERROR, WINDOW_NAME,
+                ("Save: " + message).c_str(), nullptr);
+        return ok ? 0 : 1;
+    }
 
     if (settings.use_recompiled) {
         const std::string modules = select_recompiled_modules(settings.recompiled);
@@ -248,9 +379,22 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // the game's own engine settings that ss-delta.ini changes
+    std::map<std::string, std::string> boot_config{ { "ResoDown", settings.full_3d ? "0" : "1" } };
+    for (const auto &[key, value] : settings.boot_config)
+        boot_config[key] = value;
+    override_boot_config(emuenv, data_dir / "game", boot_config);
+
     // window: size and fullscreen from the settings, F11 or Alt+Enter switch, frame rate in the title
     SDL_Window *window = nullptr;
     ss_delta::Keyboard keyboard;
+    ss_delta::Touches touches;
+    {
+        std::vector<std::string> touch_warnings;
+        touches.configure(settings.touches, touch_warnings);
+        for (const auto &line : touch_warnings)
+            LOG_WARN("ss-delta.ini: {}", line);
+    }
     auto last_title = std::chrono::steady_clock::now();
     sdl_frontend::Hooks hooks;
     hooks.on_window = [&](SDL_Window *w) {
@@ -290,7 +434,16 @@ int main(int argc, char *argv[]) {
                 break;
             if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)))
                 SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
-            else
+            else if (event.key.key == SDLK_F12) {
+                const auto t = std::time(nullptr);
+                std::tm local{};
+#ifdef _WIN32
+                localtime_s(&local, &t);
+#else
+                localtime_r(&t, &local);
+#endif
+                save_frame(emuenv, data_dir / "screenshots" / fmt::format("ss-delta_{:%Y-%m-%d_%H%M%S}.png", local));
+            } else
                 keyboard.key(emuenv, event.key.scancode, true);
             break;
         case SDL_EVENT_KEY_UP:
@@ -323,6 +476,7 @@ int main(int argc, char *argv[]) {
         }
     };
     const auto session_start = std::chrono::steady_clock::now();
+    bool frame_rate_pending = settings.frame_rate != 30;
     hooks.on_tick = [&] {
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
             // --dump-elfs: the modules the game loads at boot are written; quit
@@ -331,6 +485,19 @@ int main(int argc, char *argv[]) {
             SDL_PushEvent(&quit);
             dump_elfs_seconds = 0;
         }
+        if (frame_rate_pending && std::chrono::steady_clock::now() - session_start > std::chrono::seconds(settings.frame_rate_delay)
+            && apply_frame_rate(emuenv, settings.frame_rate))
+            frame_rate_pending = false;
+        // [touch] bindings and the test driver's fingers
+        touches.update(emuenv, keyboard);
+        // screenshots the test driver asked for through the input pipe
+        std::vector<std::string> shots;
+        {
+            const std::lock_guard<std::mutex> lock(emuenv.ctrl.mutex);
+            shots.swap(emuenv.ctrl.injected_screenshots);
+        }
+        for (const auto &path : shots)
+            save_frame(emuenv, fs_utils::utf8_to_path(path));
         // typed text reaches the game's keyboard dialogs (the player name) only while SDL's text
         // input is on; the session handles Enter, Backspace and Escape itself
         if (window) {
