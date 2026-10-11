@@ -223,14 +223,15 @@ namespace {
 
 // system.bin (1556 bytes): a header {u32 1, u32 size 0x614, u32 0, u32 format 0x22, u32 check},
 // then id lists, each sorted and ended by a zero (offsets and capacities from saves with and
-// without the add-ons; the capacities are the gaps to the next list):
+// without the add-ons; the capacities are the gaps to the next list or to other data):
 struct IdList {
     size_t offset, capacity, width; // width 2: u16 ids, 4: u32 ids
     std::vector<uint32_t> addons; // the released add-ons' ids in this list
 };
 const std::array<IdList, 4> ADDON_LISTS{ {
     // pacts: rows of quest_param.csv (the additional pacts I-XII, XIV and the otherworldly ones)
-    { 0x14, 0x210 / 2, 2, { 449, 450, 451, 455, 456, 457, 458, 459, 460, 461, 462, 463, 467, 468, 469, 470, 471, 472, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 575, 576, 577, 578, 579, 580 } },
+    // (up to 0x21c, where the options start: Color Space is at 0x21c)
+    { 0x14, (0x21c - 0x14) / 2, 2, { 449, 450, 451, 455, 456, 457, 458, 459, 460, 461, 462, 463, 467, 468, 469, 470, 471, 472, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 575, 576, 577, 578, 579, 580 } },
     // raiment and hood parts (parts_upper/lower_param.csv)
     { 0x224, 0x100 / 2, 2, { 624, 696, 708, 4348, 4420, 4432 } },
     // further items
