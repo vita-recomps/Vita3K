@@ -20,6 +20,9 @@
 #include <io/state.h>
 #include <kernel/state.h>
 #include <np/common.h>
+#include <np/state.h>
+
+#include <cstring>
 
 #include <util/tracy.h>
 TRACY_MODULE_NAME(SceNpCommon);
@@ -33,6 +36,8 @@ enum SceNpUtilErrorCode {
 
 EXPORT(int, sceNpAuthAbortRequest) {
     TRACY_FUNC(sceNpAuthAbortRequest);
+    if (emuenv.np.entitlements.enabled)
+        return 0;
     return UNIMPLEMENTED();
 }
 
@@ -48,8 +53,38 @@ struct SceNpAuthRequestParameter {
     Ptr<void> cbArg;
 };
 
+struct SceNpEntitlementId {
+    char data[32];
+};
+
+struct SceNpEntitlement {
+    SceNpEntitlementId id;
+    SceUInt64 createdDate;
+    SceUInt64 expireDate;
+    SceUInt32 type;
+    SceInt32 remainingCount;
+    SceInt32 consumedCount;
+    char padding[4];
+};
+static_assert(sizeof(SceNpEntitlement) == 0x40);
+
+// the placeholder ticket of offline entitlements: only its size matters to the game
+constexpr SceSize OFFLINE_TICKET_SIZE = 256;
+// any negative result means "not found" to the game (hypothesis: the exact code is unchecked)
+constexpr int OFFLINE_ENTITLEMENT_NOT_FOUND = static_cast<int>(0x80550511);
+
 EXPORT(int, sceNpAuthCreateStartRequest, const SceNpAuthRequestParameter *param) {
     TRACY_FUNC(sceNpAuthCreateStartRequest, param);
+    auto &ent = emuenv.np.entitlements;
+    if (ent.enabled) {
+        // the game stores the request id before its callback may run: deliver it from
+        // sceNpCheckCallback, as the system does
+        std::lock_guard<std::mutex> lock(ent.mutex);
+        const int id = ent.next_request_id++;
+        LOG_INFO("NP auth (offline entitlements): request {} started", id);
+        ent.pending.push_back({ id, param->ticketCb.address(), param->cbArg.address() });
+        return id;
+    }
     const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
     // todo: this callback function should be called from sceNpCheckCallback
     STUBBED("Immediately call ticket callback");
@@ -59,12 +94,28 @@ EXPORT(int, sceNpAuthCreateStartRequest, const SceNpAuthRequestParameter *param)
 
 EXPORT(int, sceNpAuthDestroyRequest) {
     TRACY_FUNC(sceNpAuthDestroyRequest);
+    if (emuenv.np.entitlements.enabled)
+        return 0;
     return UNIMPLEMENTED();
 }
 
-EXPORT(int, sceNpAuthGetEntitlementById) {
-    TRACY_FUNC(sceNpAuthGetEntitlementById);
-    return UNIMPLEMENTED();
+EXPORT(int, sceNpAuthGetEntitlementById, const void *ticket, SceSize ticket_size, const char *ent_id, SceNpEntitlement *ent) {
+    TRACY_FUNC(sceNpAuthGetEntitlementById, ticket, ticket_size, ent_id, ent);
+    auto &state = emuenv.np.entitlements;
+    if (!state.enabled)
+        return UNIMPLEMENTED();
+    if (!ent_id || !ent)
+        return OFFLINE_ENTITLEMENT_NOT_FOUND;
+    const std::string wanted(ent_id, strnlen(ent_id, sizeof(SceNpEntitlementId::data)));
+    LOG_INFO("NP auth (offline entitlements): entitlement {} asked", wanted);
+    for (const auto &id : state.ids) {
+        if (id != wanted)
+            continue;
+        *ent = {};
+        std::strncpy(ent->id.data, id.c_str(), sizeof(ent->id.data) - 1);
+        return 0;
+    }
+    return OFFLINE_ENTITLEMENT_NOT_FOUND;
 }
 
 EXPORT(int, sceNpAuthGetEntitlementByIdPrefix) {
@@ -72,14 +123,28 @@ EXPORT(int, sceNpAuthGetEntitlementByIdPrefix) {
     return UNIMPLEMENTED();
 }
 
-EXPORT(int, sceNpAuthGetEntitlementIdList) {
-    TRACY_FUNC(sceNpAuthGetEntitlementIdList);
-    return UNIMPLEMENTED();
+EXPORT(int, sceNpAuthGetEntitlementIdList, const void *ticket, SceSize ticket_size, SceNpEntitlementId *list, SceSize count) {
+    TRACY_FUNC(sceNpAuthGetEntitlementIdList, ticket, ticket_size, list, count);
+    auto &state = emuenv.np.entitlements;
+    if (!state.enabled)
+        return UNIMPLEMENTED();
+    LOG_INFO("NP auth (offline entitlements): entitlement list asked ({} slots), {} entitlements", count, state.ids.size());
+    if (list) {
+        for (SceSize i = 0; i < count && i < state.ids.size(); i++) {
+            list[i] = {};
+            std::strncpy(list[i].data, state.ids[i].c_str(), sizeof(list[i].data) - 1);
+        }
+    }
+    return static_cast<int>(state.ids.size());
 }
 
-EXPORT(int, sceNpAuthGetTicket) {
-    TRACY_FUNC(sceNpAuthGetTicket);
-    return UNIMPLEMENTED();
+EXPORT(int, sceNpAuthGetTicket, int request_id, void *buf, SceSize size) {
+    TRACY_FUNC(sceNpAuthGetTicket, request_id, buf, size);
+    if (!emuenv.np.entitlements.enabled)
+        return UNIMPLEMENTED();
+    if (buf)
+        std::memset(buf, 0, size);
+    return 0;
 }
 
 EXPORT(int, sceNpAuthGetTicketParam) {
@@ -89,12 +154,35 @@ EXPORT(int, sceNpAuthGetTicketParam) {
 
 EXPORT(int, sceNpAuthInit) {
     TRACY_FUNC(sceNpAuthInit);
+    if (emuenv.np.entitlements.enabled) {
+        LOG_INFO("NP auth (offline entitlements): init");
+        return 0;
+    }
     return UNIMPLEMENTED();
 }
 
 EXPORT(int, sceNpAuthTerm) {
     TRACY_FUNC(sceNpAuthTerm);
+    if (emuenv.np.entitlements.enabled)
+        return 0;
     return UNIMPLEMENTED();
+}
+
+// the ticket callbacks of offline entitlements, due from sceNpCheckCallback (SceNpManager)
+void run_offline_ticket_callbacks(EmuEnvState &emuenv, SceUID thread_id) {
+    auto &state = emuenv.np.entitlements;
+    std::vector<NpOfflineEntitlements::PendingTicket> due;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        due.swap(state.pending);
+    }
+    if (due.empty())
+        return;
+    const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
+    for (const auto &t : due) {
+        LOG_INFO("NP auth (offline entitlements): ticket for request {}, {} entitlements", t.request_id, state.ids.size());
+        thread->run_callback(t.callback, { static_cast<uint32_t>(t.request_id), OFFLINE_TICKET_SIZE, t.arg });
+    }
 }
 
 EXPORT(int, sceNpCmpNpId, np::SceNpId *npid1, np::SceNpId *npid2) {

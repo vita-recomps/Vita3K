@@ -80,6 +80,8 @@ struct CtrlState {
     VirtualKeyboardState injected_state;
     // PNG paths the test driver asked to save the current frame to (the frontend takes them)
     std::vector<std::string> injected_screenshots;
+    // (frame count, folder) recordings the test driver asked for
+    std::vector<std::pair<int, std::string>> injected_records;
     // front-touch fingers the test driver holds, in 960x544 screen points (the frontend applies them)
     std::vector<std::pair<float, float>> injected_touches;
 

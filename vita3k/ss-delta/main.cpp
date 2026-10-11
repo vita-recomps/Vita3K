@@ -21,6 +21,7 @@
 // player's own dump) are loaded from the same folder.
 
 #include "../archive.h"
+#include "dlc.h"
 #include "input.h"
 #include "saves.h"
 #include "settings.h"
@@ -41,6 +42,7 @@
 #include <io/functions.h>
 #include <io/state.h>
 #include <modules/module_parent.h>
+#include <np/state.h>
 #include <sdl-frontend/session.h>
 #include <touch/state.h>
 #include <util/log.h>
@@ -54,6 +56,7 @@
 #include <SDL3/SDL.h>
 #include <stb_image.h>
 #include <stb_image_write.h>
+#include <fmt/ranges.h>
 // provides WinMain for the windowed executable, which calls main below
 #include <SDL3/SDL_main.h>
 
@@ -126,6 +129,34 @@ void save_frame(EmuEnvState &emuenv, const fs::path &path) {
     });
 }
 
+// every rendered frame from the next one on, `count` of them, as <dir>/<n>.png (5 digits): for
+// glitches that last a frame or two
+void record_frames(EmuEnvState &emuenv, const fs::path &dir, int count) {
+    if (!emuenv.renderer || count <= 0)
+        return;
+    renderer::State *const renderer = emuenv.renderer.get();
+    auto step = std::make_shared<std::function<void()>>();
+    auto left = std::make_shared<int>(count);
+    *step = [renderer, &display = emuenv.display, dir, count, left, step] {
+        uint32_t width = 0, height = 0;
+        std::vector<uint32_t> frame = renderer->dump_frame(display, width, height);
+        const int n = count - *left;
+        if (!frame.empty() && frame.size() == static_cast<size_t>(width) * height) {
+            std::thread([frame = std::move(frame), width, height, path = dir / fmt::format("{:05}.png", n)]() mutable {
+                for (uint32_t &pixel : frame)
+                    pixel |= 0xFF000000;
+                stbi_write_png(fs_utils::path_to_utf8(path).c_str(), width, height, 4, frame.data(), width * 4);
+            }).detach();
+        }
+        if (--*left > 0)
+            renderer->run_on_render_thread(*step);
+        else
+            LOG_INFO("Recorded {} frames to {}", count, dir);
+    };
+    fs::create_directories(dir);
+    renderer->run_on_render_thread(*step);
+}
+
 // The game reads its engine settings from app0:resource/boot_config.ini, "Key<tab>Value" lines in
 // two blocks (development, then retail). Serves a copy, written to `dir`, in which each key of
 // `values` has the given value everywhere it is set; the installed file stays as it is.
@@ -165,6 +196,46 @@ void override_boot_config(EmuEnvState &emuenv, const fs::path &dir, const std::m
     const fs::path copy = dir / "boot_config.ini";
     fs::ofstream(copy, std::ios::binary) << out;
     emuenv.io.read_overrides[read_override_key(installed)] = copy;
+}
+
+// Add-ons (docs/decisions.md D14 in ss-delta). The game keeps its PSN entitlements in a manager,
+// *(*0x81c9a4e0 + 0x44), a small state machine (0x818ca438): 1 starts an NP auth request, a ticket
+// moves it to 3, 3 fetches the entitlement list (count +0x40, ids +0x44) and it returns to 0.
+// The Claim Gift page (Cassus) then hands out every listed add-on not received yet. The game
+// starts the request (0x818ca3c0) only on its way online, which ss-delta never goes, so it is
+// started here the same way, once: the NP auth HLE answers it from the game's own table.
+// Returns true when there is nothing more to do.
+bool start_entitlement_request(EmuEnvState &emuenv) {
+    auto &mem = emuenv.mem;
+    const auto u32 = [&](Address a) -> uint32_t * { return a && is_valid_addr(mem, a) ? Ptr<uint32_t>(a).get(mem) : nullptr; };
+    uint32_t *const holder = u32(0x81c9a4e0);
+    if (!holder || !*holder)
+        return false;
+    uint32_t *const mgr_ptr = u32(*holder + 0x44);
+    if (!mgr_ptr || !*mgr_ptr || !is_valid_addr(mem, *mgr_ptr + 0x47))
+        return false;
+    const Address mgr = *mgr_ptr;
+    uint32_t *const m = Ptr<uint32_t>(mgr).get(mem);
+    // [0] service id, [1] version (u16 3, u16 0), [2] state, [3] request, [4] result, ... [16] count
+    if (m[0] == 0)
+        return false; // not set up yet
+    if (m[2] != 0 || m[16] != 0) {
+        LOG_INFO("Add-ons: the game's entitlement request is already under way (state {}, {} listed)", m[2], m[16]);
+        return true;
+    }
+    m[5] = 0x24; // SceNpAuthRequestParameter: size
+    m[6] = m[1]; // version
+    m[7] = m[0]; // service id
+    m[8] = 0; // cookie
+    m[9] = 0; // cookie size
+    m[10] = 0; // entitlement id
+    m[11] = 0; // consumed count
+    m[12] = 0x818ca2af; // ticket callback (Thumb)
+    m[13] = mgr; // its argument
+    m[4] = 0;
+    m[2] = 1; // start
+    LOG_INFO("Add-ons: entitlement request started (manager {})", log_hex(mgr));
+    return true;
 }
 
 // The 60 fps study (docs/03-plan.md Phase 8): the game paces its main loop with a frame timer
@@ -379,6 +450,18 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // add-ons: the game asks PSN for its entitlements, which are answered offline from its own table
+    if (settings.dlc) {
+        const auto dlc = ss_delta::find_dlc(emuenv.vita_fs_path / "ux0" / "app" / TITLE_ID);
+        if (!dlc.ids.empty()) {
+            emuenv.np.entitlements.enabled = true;
+            emuenv.np.entitlements.ids = dlc.ids;
+            LOG_INFO("Add-ons: {} unlocked (entitlement table in {}), {} rows left out ({})", dlc.ids.size(), dlc.source,
+                dlc.left_out.size(), fmt::join(dlc.left_out, ", "));
+        } else
+            LOG_INFO("Add-ons: none in the game's data{}", dlc.source.empty() ? " (no entitlement table)" : "");
+    }
+
     // the game's own engine settings that ss-delta.ini changes
     std::map<std::string, std::string> boot_config{ { "ResoDown", settings.full_3d ? "0" : "1" } };
     for (const auto &[key, value] : settings.boot_config)
@@ -477,6 +560,7 @@ int main(int argc, char *argv[]) {
     };
     const auto session_start = std::chrono::steady_clock::now();
     bool frame_rate_pending = settings.frame_rate != 30;
+    bool entitlements_pending = emuenv.np.entitlements.enabled;
     hooks.on_tick = [&] {
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
             // --dump-elfs: the modules the game loads at boot are written; quit
@@ -485,6 +569,8 @@ int main(int argc, char *argv[]) {
             SDL_PushEvent(&quit);
             dump_elfs_seconds = 0;
         }
+        if (entitlements_pending && start_entitlement_request(emuenv))
+            entitlements_pending = false;
         if (frame_rate_pending && std::chrono::steady_clock::now() - session_start > std::chrono::seconds(settings.frame_rate_delay)
             && apply_frame_rate(emuenv, settings.frame_rate))
             frame_rate_pending = false;
@@ -492,12 +578,16 @@ int main(int argc, char *argv[]) {
         touches.update(emuenv, keyboard);
         // screenshots the test driver asked for through the input pipe
         std::vector<std::string> shots;
+        std::vector<std::pair<int, std::string>> records;
         {
             const std::lock_guard<std::mutex> lock(emuenv.ctrl.mutex);
             shots.swap(emuenv.ctrl.injected_screenshots);
+            records.swap(emuenv.ctrl.injected_records);
         }
         for (const auto &path : shots)
             save_frame(emuenv, fs_utils::utf8_to_path(path));
+        for (const auto &[count, dir] : records)
+            record_frames(emuenv, fs_utils::utf8_to_path(dir), count);
         // typed text reaches the game's keyboard dialogs (the player name) only while SDL's text
         // input is on; the session handles Enter, Backspace and Escape itself
         if (window) {

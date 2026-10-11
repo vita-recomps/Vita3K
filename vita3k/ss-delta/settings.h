@@ -39,6 +39,8 @@ struct Settings {
     std::string filter = "Bilinear";
     // [audio]
     int volume = 100;
+    // [game]
+    bool dlc = false; // experimental: offer the add-ons whose items are in the game's data
     // [recompiled]
     bool use_recompiled = true;
     bool jit = false; // keep the JIT for guest code without native code (NativeCPU otherwise)

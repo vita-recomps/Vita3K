@@ -147,6 +147,7 @@ void refresh_controllers(CtrlState &state, EmuEnvState &emuenv) {
 //   axes <lx> <ly> <rx> <ry>      stick positions in [-1, 1]
 //   touch <x> <y> ... | none      the frontend holds front-touch fingers at these points (960x544)
 //   screenshot <path>             the frontend saves the current frame there, at render resolution
+//   record <count> <dir>          the frontend saves the next <count> rendered frames into <dir>
 // Buttons: cross circle square triangle up down left right l r l2 r2 l3 r3 start select.
 // Nothing goes through the window, so automated runs never need keyboard focus.
 static uint32_t parse_injected_button(const std::string &name) {
@@ -196,6 +197,13 @@ static void apply_injected_command(CtrlState &state, const std::string &line) {
             points.emplace_back(x, y);
         std::lock_guard<std::mutex> guard(state.mutex);
         state.injected_touches = std::move(points);
+    } else if (command == "record") {
+        int count = 0;
+        std::string dir;
+        words >> count;
+        std::getline(words >> std::ws, dir);
+        std::lock_guard<std::mutex> guard(state.mutex);
+        state.injected_records.emplace_back(count, dir);
     } else if (command == "screenshot") {
         std::string path;
         std::getline(words >> std::ws, path);

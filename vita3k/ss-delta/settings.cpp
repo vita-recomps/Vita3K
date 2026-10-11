@@ -58,6 +58,11 @@ filter = Bilinear
 ; 0-100.
 volume = 100
 
+[game]
+; Experimental, not finished: offer the game the add-ons (costumes, hoods, a sigil) whose items
+; are in its own data, as if bought on PSN. The game lists them, but does not hand them out yet.
+dlc = false
+
 [recompiled]
 ; Run the recompiled modules natively (false: everything on the JIT, for comparison).
 enabled = true
@@ -224,6 +229,7 @@ Settings load_settings(const fs::path &dir) {
             out.warnings.push_back("display.filter = " + *v);
     }
     get_number("audio.volume", out.volume, 0, 100);
+    get_bool("game.dlc", out.dlc);
     get_bool("recompiled.enabled", out.use_recompiled);
     get_bool("recompiled.jit", out.jit);
     if (const auto v = get("debug.log_level")) {

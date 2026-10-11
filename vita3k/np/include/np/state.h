@@ -24,6 +24,7 @@
 
 #include <map>
 #include <mutex>
+#include <string>
 #include <vector>
 
 struct SceNpServiceStateCallback {
@@ -70,10 +71,27 @@ enum SceNpServiceState : uint32_t {
     SCE_NP_SERVICE_STATE_ONLINE = 3
 };
 
+// Entitlements answered without PSN (ss-delta: the game's add-on unlock keys, whose content is in
+// its own data). When enabled, sceNpAuth issues a placeholder ticket and the entitlement queries
+// answer from `ids`.
+struct NpOfflineEntitlements {
+    bool enabled = false;
+    std::vector<std::string> ids;
+    struct PendingTicket {
+        int request_id;
+        Address callback;
+        Address arg;
+    };
+    std::mutex mutex;
+    std::vector<PendingTicket> pending; // ticket callbacks run by the next sceNpCheckCallback
+    int next_request_id = 1;
+};
+
 struct NpState {
     bool inited = false;
     np_callbacks cbs;
     SceUID state_cb_id;
+    NpOfflineEntitlements entitlements;
 
     NpTrophyState trophy_state;
     np::CommunicationID comm_id;
