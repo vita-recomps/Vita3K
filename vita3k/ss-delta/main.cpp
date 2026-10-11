@@ -167,6 +167,10 @@ int main(int argc, char *argv[]) {
     cfg.high_accuracy = true;
     cfg.disable_surface_sync = false;
     cfg.memory_mapping = "double-buffer";
+    // a pipeline seen for the first time is compiled in the background (its draws are skipped
+    // meanwhile) and kept in the pipeline cache next to the executable; no on-screen notice
+    cfg.async_pipeline_compilation = true;
+    cfg.show_compile_shaders = false;
     cfg.validation_layer = settings.validation_layer;
     // the player's choices
     cfg.resolution_multiplier = settings.scale;
