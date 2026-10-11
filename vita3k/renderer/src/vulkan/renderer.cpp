@@ -612,6 +612,7 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
 
         // use these features (because they are used by the vita GPU) if they are available
         vk::PhysicalDeviceFeatures enabled_features{
+            .depthClamp = physical_device_features.depthClamp,
             .fillModeNonSolid = physical_device_features.fillModeNonSolid,
             .wideLines = physical_device_features.wideLines,
             .samplerAnisotropy = physical_device_features.samplerAnisotropy,
@@ -964,6 +965,10 @@ void VKState::late_init(const Config &cfg, const std::string_view game_id, MemSt
         mapping_method = request_mapping;
 
     features.enable_memory_mapping = mapping_method != MappingMethod::Disabled;
+
+    // depth below 0 is clamped per fragment by the pipeline rather than per vertex in the shader
+    features.support_depth_clamp = static_cast<bool>(physical_device_features.depthClamp);
+    LOG_INFO_IF(!features.support_depth_clamp, "The GPU has no depth clamp: depth is clamped per vertex (triangles crossing the near plane can show wrong colours)");
 
 #ifdef __ANDROID__
     if (mapping_method == MappingMethod::NativeBuffer) {

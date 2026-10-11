@@ -1743,8 +1743,12 @@ static spv::Function *make_vert_finalize_function(spv::Builder &b, const SpirvSh
                     z = b.createBinOp(spv::OpFMul, f32, z, z_scale);
                     z = b.createBinOp(spv::OpFAdd, f32, z, z_offset);
 
-                    // z values below 0 get clamped
-                    z = b.createBuiltinCall(f32, utils.std_builtins, GLSLstd450FMax, { z, zero });
+                    // z values below 0 get clamped. With depth clamp in the pipeline the clamp is done per
+                    // fragment; clamping the vertex here instead breaks clipping for triangles crossing the
+                    // near plane (their z no longer varies linearly), which shifts their clipped vertices
+                    // and garbles their attributes (ss-delta: ST03A's water while the camera skims it)
+                    if (!features.support_depth_clamp)
+                        z = b.createBuiltinCall(f32, utils.std_builtins, GLSLstd450FMax, { z, zero });
 
                     if (!translation_state.is_vulkan) {
                         // convert [0,1] depth range (gxp, vulkan) to [-1,1] depth range (opengl)
