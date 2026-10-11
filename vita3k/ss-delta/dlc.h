@@ -15,25 +15,18 @@
 // with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-// The game's add-on content: unlock keys (PSN entitlements) for costumes, hoods and a sigil whose
-// items ship in the game's own data. The list of keys is the game's
-// resource/database/network/entitlement_table_us.csv, read from its archives.
+// The game's add-ons (costumes, pacts) ship in its own data since the last patch; PSN only
+// recorded which were bought. This checks that the installed game has them.
 #pragma once
 
 #include <util/fs.h>
 
 #include <string>
-#include <vector>
 
 namespace ss_delta {
 
-struct DlcList {
-    std::vector<std::string> ids; // product ids the game checks, e.g. UP9000-PCSA00152_00-SSC001
-    std::vector<std::string> left_out; // rows of the table that are not released add-ons
-    std::string source; // the archive the table came from; empty when there is none
-};
-
-// The released add-ons listed in the installed game's data (app_dir = ux0/app/PCSA00152).
-DlcList find_dlc(const fs::path &app_dir);
+// True when the installed game (app_dir = ux0/app/PCSA00152) has the add-ons' pacts and raiments
+// in its data; otherwise `why` says what is missing.
+bool addon_data_present(const fs::path &app_dir, std::string &why);
 
 } // namespace ss_delta

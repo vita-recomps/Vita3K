@@ -22,6 +22,7 @@
 
 #include <miniz.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <ctime>
@@ -188,6 +189,113 @@ bool import_save(const fs::path &vita_fs, const fs::path &source, const fs::path
         return false;
     }
     message += "imported into " + fs_utils::path_to_utf8(dir);
+    return true;
+}
+
+namespace {
+
+// system.bin (1556 bytes): a header {u32 1, u32 size 0x614, u32 0, u32 format 0x22, u32 check},
+// then id lists, each sorted and ended by a zero (offsets and capacities from saves with and
+// without the add-ons; the capacities are the gaps to the next list):
+struct IdList {
+    size_t offset, capacity, width; // width 2: u16 ids, 4: u32 ids
+    std::vector<uint32_t> addons; // the released add-ons' ids in this list
+};
+const std::array<IdList, 4> ADDON_LISTS{ {
+    // pacts: rows of quest_param.csv (the additional pacts I-XII, XIV and the otherworldly ones)
+    { 0x14, 0x210 / 2, 2, { 449, 450, 451, 455, 456, 457, 458, 459, 460, 461, 462, 463, 467, 468, 469, 470, 471, 472, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 575, 576, 577, 578, 579, 580 } },
+    // raiment and hood parts (parts_upper/lower_param.csv)
+    { 0x224, 0x100 / 2, 2, { 624, 696, 708, 4348, 4420, 4432 } },
+    // further items
+    { 0x324, 0x20 / 4, 4, { 502, 512, 7812, 8702, 8802 } },
+    // raiments: rows of costume_table.csv (Healer, Beast, Easterner ...)
+    { 0x344, (0x614 - 0x344) / 2, 2, { 112, 113, 114, 115, 116, 117, 118, 119, 130 } },
+} };
+constexpr size_t SYSTEM_SIZE = 1556;
+constexpr size_t CHECK_OFFSET = 0x10;
+
+// CRC-32/BZIP2 of the file with its check field zeroed
+uint32_t system_check(std::vector<uint8_t> data) {
+    std::fill_n(data.begin() + CHECK_OFFSET, 4, 0);
+    uint32_t c = 0xffffffff;
+    for (const uint8_t b : data) {
+        c ^= uint32_t(b) << 24;
+        for (int k = 0; k < 8; k++)
+            c = (c & 0x80000000) ? (c << 1) ^ 0x04C11DB7 : c << 1;
+    }
+    return c ^ 0xffffffff;
+}
+
+uint32_t read_le(const std::vector<uint8_t> &d, size_t o, size_t width) {
+    uint32_t v = 0;
+    for (size_t i = 0; i < width; i++)
+        v |= uint32_t(d[o + i]) << (8 * i);
+    return v;
+}
+
+void write_le(std::vector<uint8_t> &d, size_t o, size_t width, uint32_t v) {
+    for (size_t i = 0; i < width; i++)
+        d[o + i] = uint8_t(v >> (8 * i));
+}
+
+} // namespace
+
+bool unlock_addons(const fs::path &vita_fs, const fs::path &backup_dir, std::string &message) {
+    const fs::path dir = save_dir(vita_fs);
+    const fs::path bin = dir / "system.bin";
+    if (!fs::exists(bin)) {
+        message = "no save yet";
+        return true;
+    }
+    fs::ifstream in(bin, std::ios::binary);
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    if (data.size() != SYSTEM_SIZE || read_le(data, 4, 4) != SYSTEM_SIZE || read_le(data, CHECK_OFFSET, 4) != system_check(data)) {
+        message = "system.bin is not in the expected format; left alone";
+        return false;
+    }
+    bool changed = false;
+    for (const auto &list : ADDON_LISTS) {
+        std::vector<uint32_t> ids;
+        for (size_t i = 0; i < list.capacity; i++) {
+            const uint32_t v = read_le(data, list.offset + i * list.width, list.width);
+            if (v == 0)
+                break;
+            ids.push_back(v);
+        }
+        const size_t before = ids.size();
+        for (const uint32_t id : list.addons)
+            if (std::find(ids.begin(), ids.end(), id) == ids.end())
+                ids.push_back(id);
+        if (ids.size() == before)
+            continue;
+        if (ids.size() >= list.capacity) {
+            message = "system.bin has no room for the add-ons; left alone";
+            return false;
+        }
+        std::sort(ids.begin(), ids.end());
+        for (size_t i = 0; i < ids.size(); i++)
+            write_le(data, list.offset + i * list.width, list.width, ids[i]);
+        changed = true;
+    }
+    if (!changed) {
+        message = "add-ons already recorded in the save";
+        return true;
+    }
+    write_le(data, CHECK_OFFSET, 4, system_check(data));
+
+    const fs::path backup = backup_dir / timestamp();
+    fs::create_directories(backup);
+    for (const char *name : { "system.bin", "system.bak" })
+        if (fs::exists(dir / name))
+            fs::copy_file(dir / name, backup / name, fs::copy_options::overwrite_existing);
+    for (const char *name : { "system.bin", "system.bak" }) {
+        if (!write_file(dir / name, data.data(), data.size())) {
+            message = std::string("writing ") + name + " failed";
+            return false;
+        }
+    }
+    message = "add-ons recorded in the save (previous system.bin in " + fs_utils::path_to_utf8(backup) + ")";
     return true;
 }
 

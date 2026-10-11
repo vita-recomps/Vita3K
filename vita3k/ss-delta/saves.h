@@ -35,4 +35,11 @@ bool import_save(const fs::path &vita_fs, const fs::path &source, const fs::path
 // Copies the save's four files to the folder `dest`.
 bool export_save(const fs::path &vita_fs, const fs::path &dest, std::string &message);
 
+// The add-ons (docs/decisions.md D14 in ss-delta): system.bin records what was bought on PSN as
+// lists of ids. Adds the released add-ons to those lists in the save's system.bin and .bak,
+// keeping what is there; the previous files go to `backup_dir`/<date and time>/ first. Does
+// nothing when there is no save yet or the add-ons are recorded already. Returns false with the
+// reason in `message` on an error; `message` also says what was done.
+bool unlock_addons(const fs::path &vita_fs, const fs::path &backup_dir, std::string &message);
+
 } // namespace ss_delta

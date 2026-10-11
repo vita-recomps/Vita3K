@@ -66,12 +66,8 @@ EXPORT(int, sceNpAuthGetAuthorizationCode) {
     return UNIMPLEMENTED();
 }
 
-// SceNpCommon: the ticket callbacks of offline entitlements
-void run_offline_ticket_callbacks(EmuEnvState &emuenv, SceUID thread_id);
-
 EXPORT(int, sceNpCheckCallback) {
     TRACY_FUNC(sceNpCheckCallback);
-    run_offline_ticket_callbacks(emuenv, thread_id);
 
     const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
     const SceNpServiceState state = emuenv.cfg.current_config.psn_signed_in ? SCE_NP_SERVICE_STATE_SIGNED_IN : SCE_NP_SERVICE_STATE_SIGNED_OUT;

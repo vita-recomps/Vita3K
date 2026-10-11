@@ -42,7 +42,6 @@
 #include <io/functions.h>
 #include <io/state.h>
 #include <modules/module_parent.h>
-#include <np/state.h>
 #include <sdl-frontend/session.h>
 #include <touch/state.h>
 #include <util/log.h>
@@ -56,7 +55,6 @@
 #include <SDL3/SDL.h>
 #include <stb_image.h>
 #include <stb_image_write.h>
-#include <fmt/ranges.h>
 // provides WinMain for the windowed executable, which calls main below
 #include <SDL3/SDL_main.h>
 
@@ -196,46 +194,6 @@ void override_boot_config(EmuEnvState &emuenv, const fs::path &dir, const std::m
     const fs::path copy = dir / "boot_config.ini";
     fs::ofstream(copy, std::ios::binary) << out;
     emuenv.io.read_overrides[read_override_key(installed)] = copy;
-}
-
-// Add-ons (docs/decisions.md D14 in ss-delta). The game keeps its PSN entitlements in a manager,
-// *(*0x81c9a4e0 + 0x44), a small state machine (0x818ca438): 1 starts an NP auth request, a ticket
-// moves it to 3, 3 fetches the entitlement list (count +0x40, ids +0x44) and it returns to 0.
-// The Claim Gift page (Cassus) then hands out every listed add-on not received yet. The game
-// starts the request (0x818ca3c0) only on its way online, which ss-delta never goes, so it is
-// started here the same way, once: the NP auth HLE answers it from the game's own table.
-// Returns true when there is nothing more to do.
-bool start_entitlement_request(EmuEnvState &emuenv) {
-    auto &mem = emuenv.mem;
-    const auto u32 = [&](Address a) -> uint32_t * { return a && is_valid_addr(mem, a) ? Ptr<uint32_t>(a).get(mem) : nullptr; };
-    uint32_t *const holder = u32(0x81c9a4e0);
-    if (!holder || !*holder)
-        return false;
-    uint32_t *const mgr_ptr = u32(*holder + 0x44);
-    if (!mgr_ptr || !*mgr_ptr || !is_valid_addr(mem, *mgr_ptr + 0x47))
-        return false;
-    const Address mgr = *mgr_ptr;
-    uint32_t *const m = Ptr<uint32_t>(mgr).get(mem);
-    // [0] service id, [1] version (u16 3, u16 0), [2] state, [3] request, [4] result, ... [16] count
-    if (m[0] == 0)
-        return false; // not set up yet
-    if (m[2] != 0 || m[16] != 0) {
-        LOG_INFO("Add-ons: the game's entitlement request is already under way (state {}, {} listed)", m[2], m[16]);
-        return true;
-    }
-    m[5] = 0x24; // SceNpAuthRequestParameter: size
-    m[6] = m[1]; // version
-    m[7] = m[0]; // service id
-    m[8] = 0; // cookie
-    m[9] = 0; // cookie size
-    m[10] = 0; // entitlement id
-    m[11] = 0; // consumed count
-    m[12] = 0x818ca2af; // ticket callback (Thumb)
-    m[13] = mgr; // its argument
-    m[4] = 0;
-    m[2] = 1; // start
-    LOG_INFO("Add-ons: entitlement request started (manager {})", log_hex(mgr));
-    return true;
 }
 
 // The 60 fps study (docs/03-plan.md Phase 8): the game paces its main loop with a frame timer
@@ -450,16 +408,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // add-ons: the game asks PSN for its entitlements, which are answered offline from its own table
+    // add-ons: the game reads what was bought on PSN from the save's system.bin; the content itself
+    // is in the game's data (docs/decisions.md D14 in ss-delta)
     if (settings.dlc) {
-        const auto dlc = ss_delta::find_dlc(emuenv.vita_fs_path / "ux0" / "app" / TITLE_ID);
-        if (!dlc.ids.empty()) {
-            emuenv.np.entitlements.enabled = true;
-            emuenv.np.entitlements.ids = dlc.ids;
-            LOG_INFO("Add-ons: {} unlocked (entitlement table in {}), {} rows left out ({})", dlc.ids.size(), dlc.source,
-                dlc.left_out.size(), fmt::join(dlc.left_out, ", "));
+        std::string why;
+        if (ss_delta::addon_data_present(emuenv.vita_fs_path / "ux0" / "app" / TITLE_ID, why)) {
+            std::string message;
+            const bool ok = ss_delta::unlock_addons(settings.vita_fs, data_dir / "save-backups", message);
+            if (ok)
+                LOG_INFO("Add-ons: {}", message);
+            else
+                LOG_ERROR("Add-ons: {}", message);
         } else
-            LOG_INFO("Add-ons: none in the game's data{}", dlc.source.empty() ? " (no entitlement table)" : "");
+            LOG_WARN("Add-ons: not unlocked, the installed game lacks them ({})", why);
     }
 
     // the game's own engine settings that ss-delta.ini changes
@@ -560,7 +521,6 @@ int main(int argc, char *argv[]) {
     };
     const auto session_start = std::chrono::steady_clock::now();
     bool frame_rate_pending = settings.frame_rate != 30;
-    bool entitlements_pending = emuenv.np.entitlements.enabled;
     hooks.on_tick = [&] {
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
             // --dump-elfs: the modules the game loads at boot are written; quit
@@ -569,8 +529,6 @@ int main(int argc, char *argv[]) {
             SDL_PushEvent(&quit);
             dump_elfs_seconds = 0;
         }
-        if (entitlements_pending && start_entitlement_request(emuenv))
-            entitlements_pending = false;
         if (frame_rate_pending && std::chrono::steady_clock::now() - session_start > std::chrono::seconds(settings.frame_rate_delay)
             && apply_frame_rate(emuenv, settings.frame_rate))
             frame_rate_pending = false;

@@ -19,19 +19,14 @@
 
 #include <miniz.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
-#include <string_view>
 
 namespace ss_delta {
 
 namespace {
-
-constexpr const char *TABLE = "resource/database/network/entitlement_table_us.csv";
-constexpr const char *PREFIX = "UP9000-PCSA00152_00-SSC";
-// "配布予定なし" (no distribution planned) in the table's Shift-JIS comments
-constexpr std::string_view NOT_RELEASED = "\x94\x7a\x95\x7a\x97\x5c\x92\xe8\x82\xc8\x82\xb5";
 
 // the .pkh key: CRC-32/BZIP2 of the lower-case path (tools/lspk.py in ss-delta)
 uint32_t path_hash(const std::string &path) {
@@ -92,40 +87,46 @@ std::optional<std::vector<uint8_t>> read_member(const fs::path &base, const std:
     return std::nullopt;
 }
 
-} // namespace
-
-DlcList find_dlc(const fs::path &app_dir) {
-    DlcList out;
+// lines of a member, from archive_patch3 when it has it (it overrides archive, as in the game)
+std::optional<std::vector<std::string>> read_lines(const fs::path &app_dir, const std::string &path) {
     const fs::path retail = app_dir / "resource" / "data" / "pack" / "mount" / "retail";
-    std::optional<std::vector<uint8_t>> table;
-    // the patch archive overrides the base one, as in the game
     for (const char *archive : { "archive_patch3", "archive" }) {
-        table = read_member(retail / archive, TABLE);
-        if (table) {
-            out.source = archive;
-            break;
+        if (const auto data = read_member(retail / archive, path)) {
+            std::vector<std::string> lines;
+            std::string line;
+            for (const uint8_t c : *data) {
+                if (c == '\n') {
+                    lines.push_back(line);
+                    line.clear();
+                } else if (c != '\r')
+                    line += static_cast<char>(c);
+            }
+            if (!line.empty())
+                lines.push_back(line);
+            return lines;
         }
     }
-    if (!table)
-        return out;
-    // "product id,box id,release version,comment" rows after a header line
-    const std::string text(table->begin(), table->end());
-    size_t pos = text.find('\n');
-    while (pos != std::string::npos && pos + 1 < text.size()) {
-        const size_t start = pos + 1;
-        pos = text.find('\n', start);
-        std::string line = text.substr(start, pos == std::string::npos ? std::string::npos : pos - start);
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        const std::string id = line.substr(0, line.find(','));
-        if (id.empty())
-            continue;
-        if (id.starts_with(PREFIX) && line.find(NOT_RELEASED) == std::string::npos)
-            out.ids.push_back(id);
-        else
-            out.left_out.push_back(id);
+    return std::nullopt;
+}
+
+} // namespace
+
+bool addon_data_present(const fs::path &app_dir, std::string &why) {
+    // the add-on pacts are quest_param.csv rows up to 580, the raiments costume_table.csv rows up
+    // to 130 (saves.cpp ADDON_LISTS)
+    const auto quests = read_lines(app_dir, "resource/boot/quest_param.csv");
+    if (!quests || quests->size() < 1 + 581) {
+        why = quests ? "quest_param.csv has " + std::to_string(quests->size() - 1) + " quests, the add-ons need 581 (game update 1.30)"
+                     : "quest_param.csv not found in the game's archives";
+        return false;
     }
-    return out;
+    const auto costumes = read_lines(app_dir, "resource/boot/costume_table.csv");
+    const bool raiments = costumes && std::any_of(costumes->begin(), costumes->end(), [](const std::string &l) { return l.starts_with("130,"); });
+    if (!raiments) {
+        why = "costume_table.csv lacks the add-on raiments";
+        return false;
+    }
+    return true;
 }
 
 } // namespace ss_delta

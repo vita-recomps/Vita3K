@@ -59,9 +59,10 @@ filter = Bilinear
 volume = 100
 
 [game]
-; Experimental, not finished: offer the game the add-ons (costumes, hoods, a sigil) whose items
-; are in its own data, as if bought on PSN. The game lists them, but does not hand them out yet.
-dlc = false
+; Unlock the add-ons (raiments, hoods, additional and otherworldly pacts). Their content is in the
+; game's own data since update 1.30; PSN, which recorded the purchases, is closed. The save's
+; system.bin is changed once (a copy goes to ss-delta/save-backups/).
+dlc = true
 
 [recompiled]
 ; Run the recompiled modules natively (false: everything on the JIT, for comparison).

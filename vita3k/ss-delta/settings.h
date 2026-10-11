@@ -40,7 +40,7 @@ struct Settings {
     // [audio]
     int volume = 100;
     // [game]
-    bool dlc = false; // experimental: offer the add-ons whose items are in the game's data
+    bool dlc = true; // record the add-ons (whose content is in the game's data) in the save
     // [recompiled]
     bool use_recompiled = true;
     bool jit = false; // keep the JIT for guest code without native code (NativeCPU otherwise)
