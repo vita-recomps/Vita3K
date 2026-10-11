@@ -601,7 +601,9 @@ EXPORT(int, sceNetCheckDialogInit, const SceNetCheckDialogParam *param) {
         break;
     default:
         emuenv.common_dialog.status = SCE_COMMON_DIALOG_STATUS_FINISHED;
-        emuenv.common_dialog.result = SCE_COMMON_DIALOG_RESULT_OK;
+        // offline there is no connection to make: the user backs out, as on a Vita without one
+        // (reporting success left games waiting for a server forever)
+        emuenv.common_dialog.result = emuenv.cfg.offline ? SCE_COMMON_DIALOG_RESULT_USER_CANCELED : SCE_COMMON_DIALOG_RESULT_OK;
         break;
     }
 
