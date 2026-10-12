@@ -468,7 +468,30 @@ AssignedAddr get_selected_assigned_addr(int32_t &outIndex) {
     return addrs[outIndex];
 }
 
+static int local_adhoc = 0;
+
+void set_local_adhoc(int player) {
+    local_adhoc = (player >= 1 && player <= LOCAL_ADHOC_MAX) ? player : 0;
+}
+
+int local_adhoc_player() {
+    return local_adhoc;
+}
+
+uint32_t local_adhoc_addr(int player) {
+    return htonl(0x7F000000u | static_cast<uint32_t>(player));
+}
+
+bool is_local_adhoc_broadcast(uint32_t addr) {
+    return local_adhoc && (addr == htonl(0x7FFFFFFFu) || addr == 0xFFFFFFFFu);
+}
+
 void init_address(int32_t &outIndex, uint32_t &netAddr, uint32_t &broadcastAddr) {
+    if (local_adhoc) {
+        netAddr = local_adhoc_addr(local_adhoc);
+        broadcastAddr = htonl(0x7FFFFFFFu); // 127.255.255.255, sent to each copy (P2PSocket)
+        return;
+    }
     // Initialize the net and broadcast address based on the assigned address and netmask
     const auto addr = get_selected_assigned_addr(outIndex);
     int netMask;

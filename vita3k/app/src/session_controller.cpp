@@ -85,6 +85,7 @@ bool AppSessionController::initialize_renderer(renderer::FrameHost &frame) {
     }
 
     apply_renderer_config(emuenv);
+    emuenv.renderer->shader_cache_read_only = emuenv.cfg.shader_cache_read_only;
     renderer_initialized = true;
     return true;
 }

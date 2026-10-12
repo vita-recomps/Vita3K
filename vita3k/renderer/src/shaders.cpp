@@ -50,6 +50,8 @@ bool get_shaders_cache_hashs(State &renderer) {
     shaders_hashs.read((char *)&features_mask, sizeof(uint32_t));
     if (versionInFile != shader::CURRENT_VERSION || features_mask != renderer.get_features_mask()) {
         shaders_hashs.close();
+        if (renderer.shader_cache_read_only)
+            return false;
         fs::remove_all(renderer.shaders_path);
         fs::remove_all(renderer.shaders_log_path);
         if (versionInFile != shader::CURRENT_VERSION)
@@ -87,6 +89,8 @@ bool get_shaders_cache_hashs(State &renderer) {
 }
 
 void save_shaders_cache_hashs(State &renderer, std::vector<ShadersHash> &shaders_cache_hashs) {
+    if (renderer.shader_cache_read_only)
+        return;
     fs::create_directories(renderer.shaders_path);
     std::string hash_file_name = fmt::format("hashs-{}.dat", (renderer.current_backend == Backend::OpenGL) ? "gl" : "vk");
     fs::ofstream shaders_hashs(renderer.shaders_path / hash_file_name, std::ios::out | std::ios::binary);
@@ -157,7 +161,7 @@ static R load_shader_generic(const fs::path &shader_path) {
     return source;
 }
 
-static shader::GeneratedShader load_shader_generic(shader::Target target, const SceGxmProgram &program, const FeatureState &features, const shader::Hints &hints, bool maskupdate, const fs::path &shader_cache_path, const fs::path &shaderlog_path, const char *shader_type_str, const std::string &shader_version, bool shader_cache) {
+static shader::GeneratedShader load_shader_generic(shader::Target target, const SceGxmProgram &program, const FeatureState &features, const shader::Hints &hints, bool maskupdate, const fs::path &shader_cache_path, const fs::path &shaderlog_path, const char *shader_type_str, const std::string &shader_version, bool shader_cache, bool write_cache = true) {
     // TODO: no need to recompute the hash here
     const std::string hash_text = hex_string(get_shader_hash(program));
     // Set Shader Hash with Version
@@ -205,6 +209,9 @@ static shader::GeneratedShader load_shader_generic(shader::Target target, const 
 
     shader::GeneratedShader source = shader::convert_gxp(program, hash_text, features, target, hints, maskupdate, false, write_data_with_ext);
 
+    if (!write_cache)
+        return source;
+
     // Copy shader generate to shaders cache
     const auto shaders_cache_path = fs::path(shader_cache_path);
     fs::create_directories(shaders_cache_path);
@@ -229,14 +236,14 @@ std::string load_glsl_shader(const SceGxmProgram &program, const FeatureState &f
     return load_shader_generic(shader::Target::GLSLOpenGL, program, features, hints, maskupdate, shader_cache_path, shader_log_path, shader_type_str, shader_version, shader_cache).glsl;
 }
 
-std::vector<uint32_t> load_spirv_shader(const SceGxmProgram &program, const FeatureState &features, bool is_vulkan, const shader::Hints &hints, bool maskupdate, const fs::path &shader_cache_path, const fs::path &shader_log_path, const std::string &shader_version, bool shader_cache) {
+std::vector<uint32_t> load_spirv_shader(const SceGxmProgram &program, const FeatureState &features, bool is_vulkan, const shader::Hints &hints, bool maskupdate, const fs::path &shader_cache_path, const fs::path &shader_log_path, const std::string &shader_version, bool shader_cache, bool write_cache) {
     const shader::Target target = is_vulkan ? shader::Target::SpirVVulkan : shader::Target::SpirVOpenGL;
     auto shader_type_to_str = [](SceGxmProgramType type) {
         return (type == SceGxmProgramType::Vertex) ? "vert.spv.txt" : ((type == SceGxmProgramType::Fragment) ? "frag.spv.txt" : "unknown.spv.txt");
     };
     const char *shader_type_str = shader_type_to_str(program.get_type());
 
-    return load_shader_generic(target, program, features, hints, maskupdate, shader_cache_path, shader_log_path, shader_type_str, shader_version, shader_cache).spirv;
+    return load_shader_generic(target, program, features, hints, maskupdate, shader_cache_path, shader_log_path, shader_type_str, shader_version, shader_cache, write_cache).spirv;
 }
 
 std::string pre_load_shader_glsl(const fs::path &shader_path) {

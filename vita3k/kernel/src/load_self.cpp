@@ -15,6 +15,7 @@
 // with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+#include <cpu/aot.h>
 #include <cpu/functions.h>
 #include <kernel/load_self.h>
 #include <kernel/relocation.h>
@@ -648,7 +649,19 @@ SceUID load_self(KernelState &kernel, MemState &mem, const void *self, const std
                 Address segment_address = 0;
                 auto alloc_name = fmt::format("{}:seg{}", self_path, seg_index);
 
-                segment_address = try_alloc_at(mem, seg_header.p_vaddr, seg_header.p_memsz, alloc_name.c_str());
+                // ss-delta: a relocatable module with recompiled code goes where that code was
+                // generated for, when free (cpu/aot.h aot_preferred_base)
+                if (isRelocatable && seg_index == 0) {
+                    std::string stem = self_path.substr(self_path.find_last_of("/:") + 1);
+                    stem = stem.substr(0, stem.rfind('.'));
+                    if (const Address base = aot_preferred_base(stem)) {
+                        segment_address = try_alloc_at(mem, base, seg_header.p_memsz, alloc_name.c_str());
+                        LOG_INFO_IF(segment_address, "{}: code placed at {}, where its native code expects it", self_path, log_hex(base));
+                        LOG_WARN_IF(!segment_address, "{}: {} is taken; the module's native code will not match", self_path, log_hex(base));
+                    }
+                }
+                if (!segment_address)
+                    segment_address = try_alloc_at(mem, seg_header.p_vaddr, seg_header.p_memsz, alloc_name.c_str());
 
                 if (!segment_address) {
                     if (isRelocatable) { // Try allocating somewhere else

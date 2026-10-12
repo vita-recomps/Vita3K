@@ -167,6 +167,7 @@ static void check_members(Config &self, const Config &rhs) {
     self.console = rhs.console;
     self.frontend = rhs.frontend;
     self.offline = rhs.offline;
+    self.shader_cache_read_only = rhs.shader_cache_read_only;
     self.app_args = rhs.app_args;
     self.load_app_list = rhs.load_app_list;
     self.self_path = rhs.self_path;

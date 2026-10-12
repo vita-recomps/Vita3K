@@ -86,6 +86,8 @@ void refresh_controllers(CtrlState &state, EmuEnvState &emuenv) {
         if (state.controllers_num >= SCE_CTRL_MAX_WIRELESS_NUM) {
             break;
         }
+        if (state.only_gamepad > 0 && gamepad_index != state.only_gamepad - 1)
+            continue;
 
 #ifdef __ANDROID__
         // for whatever reasons, fingerprint sensors are detected as controllers, filter them out

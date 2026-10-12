@@ -47,6 +47,7 @@
 #include <sdl-frontend/session.h>
 #include <touch/state.h>
 #include <util/log.h>
+#include <util/net_utils.h>
 #include <util/string_utils.h>
 #include <util/sysinfo.h>
 
@@ -263,11 +264,14 @@ int main(int argc, char *argv[]) {
     //   --export-save <folder>     copy a save out
     //   --slot <1-3>               the game's save slot for the two above (default 1)
     //   --quiet                    no message box for the two above (the result is in the log)
+    //   --player <1-4>             a copy of the game for another player of Ad Hoc Play, with its
+    //                              own Vita user (saves), config and log (ss-delta/player<N>/)
     std::vector<std::string> install_firmware, install_content;
     double dump_elfs_seconds = 0;
     std::string vita_fs_override, import_save_from, export_save_to;
     bool quiet = false;
     int save_slot = 1;
+    int player = 1;
     for (int i = 1; i < argc; i++) {
         const std::string arg = argv[i];
         const bool has_value = i + 1 < argc;
@@ -287,19 +291,25 @@ int main(int argc, char *argv[]) {
             save_slot = std::atoi(argv[++i]);
         else if (arg == "--quiet")
             quiet = true;
+        else if (arg == "--player" && has_value)
+            player = std::clamp(std::atoi(argv[++i]), 1, net_utils::LOCAL_ADHOC_MAX);
     }
+    // player N is the Vita user N-1 (00 for player 1, the user every install has)
+    const std::string user_id = fmt::format("{:02}", player - 1);
+    const std::string window_name = player == 1 ? WINDOW_NAME : fmt::format("{} (player {})", WINDOW_NAME, player);
 
     Root root_paths;
     app::init_paths(root_paths);
     const fs::path exe_dir = root_paths.get_static_assets_path();
-    // our own config and log, apart from a Vita3K.exe in the same folder; the shader cache is shared
-    const fs::path data_dir = exe_dir / "ss-delta" / "";
+    // our own config and log, apart from a Vita3K.exe in the same folder; the shader cache is shared.
+    // Players 2 and up have theirs in a folder of their own.
+    const fs::path data_dir = player == 1 ? exe_dir / "ss-delta" / "" : exe_dir / "ss-delta" / fmt::format("player{}", player) / "";
     fs::create_directories(data_dir);
     root_paths.set_config_path(data_dir);
     root_paths.set_log_path(data_dir);
     root_paths.set_shared_path(data_dir);
 
-    ss_delta::Settings settings = ss_delta::load_settings(exe_dir);
+    ss_delta::Settings settings = ss_delta::load_settings(exe_dir, player);
     if (!vita_fs_override.empty())
         settings.vita_fs = fs_utils::utf8_to_path(vita_fs_override) / "";
     root_paths.set_vita_fs_path(settings.vita_fs);
@@ -308,10 +318,12 @@ int main(int argc, char *argv[]) {
         return 1;
     logging::set_level(static_cast<spdlog::level::level_enum>(settings.log_level));
     LOG_INFO("ss-delta on {}", window_title);
+    LOG_INFO_IF(player > 1, "Player {} (Vita user {})", player, user_id);
     LOG_INFO("CPU: {}", util::get_system_info());
     for (const auto &line : settings.warnings)
         LOG_WARN("ss-delta.ini: ignored \"{}\"", line);
 
+    ss_delta::set_save_user(user_id);
     if (!import_save_from.empty() || !export_save_to.empty()) {
         std::string message;
         const bool ok = !import_save_from.empty()
@@ -322,7 +334,7 @@ int main(int argc, char *argv[]) {
         else
             LOG_ERROR("Save: {}", message);
         if (!quiet)
-            SDL_ShowSimpleMessageBox(ok ? SDL_MESSAGEBOX_INFORMATION : SDL_MESSAGEBOX_ERROR, WINDOW_NAME,
+            SDL_ShowSimpleMessageBox(ok ? SDL_MESSAGEBOX_INFORMATION : SDL_MESSAGEBOX_ERROR, window_name.c_str(),
                 ("Save: " + message).c_str(), nullptr);
         return ok ? 0 : 1;
     }
@@ -352,6 +364,11 @@ int main(int argc, char *argv[]) {
     cfg.discord_rich_presence = false;
     // the game's online services are gone: no network at all, as on a Vita in flight mode
     cfg.offline = true;
+    // Ad Hoc Play: copies on this PC talk over 127.0.0.<player>; on a network, through an adapter
+    // (Vita3K's adhoc-addr). Players 2 and up only read the shader cache player 1 keeps.
+    net_utils::set_local_adhoc(settings.lan ? 0 : player);
+    cfg.adhoc_addr = settings.adapter;
+    cfg.shader_cache_read_only = player > 1;
     cfg.check_for_updates = false;
     // what the game needs (docs/decisions.md D4 update 4 in ss-delta): Vulkan, surface sync and
     // high accuracy for its fog, haze and smoke, double-buffered memory mapping
@@ -374,6 +391,10 @@ int main(int argc, char *argv[]) {
     SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "101");
     SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "101");
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
+    // [multiplayer] gamepad: one gamepad per copy of the game, read also while its window is in
+    // the background
+    if (settings.player_gamepad > 0)
+        SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_JOY_CONS, "1");
@@ -387,6 +408,7 @@ int main(int argc, char *argv[]) {
         fail("The emulated environment could not be initialised. See ss-delta/vita3k.log.");
         return 1;
     }
+    emuenv.ctrl.only_gamepad = settings.player_gamepad;
     if (emuenv.cfg.controller_binds.size() != 15 || emuenv.cfg.controller_axis_binds.size() != 6)
         app::reset_controller_binding(emuenv);
     {
@@ -433,6 +455,25 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     app::load_users(emuenv);
+    if (player > 1) {
+        // users 01, 02 ... in order, so that player N's is N-1
+        for (int p = 2; p <= player; p++) {
+            const std::string id = fmt::format("{:02}", p - 1);
+            if (!emuenv.app.user_list.users.contains(id) && app::create_user(emuenv, fmt::format("Player {}", p)) != id)
+                LOG_WARN("Vita user {} could not be created for player {}", id, p);
+        }
+        if (!emuenv.app.user_list.users.contains(user_id)) {
+            fail(fmt::format("Player {}'s Vita user ({}) could not be created. See {}.", player, user_id,
+                fs_utils::path_to_utf8(data_dir / "vita3k.log")));
+            return 1;
+        }
+        emuenv.cfg.user_id = user_id;
+        std::string message;
+        if (ss_delta::copy_save_to_user(settings.vita_fs, "00", user_id, message))
+            LOG_INFO("Save: {}", message);
+        else
+            LOG_ERROR("Save: {}", message);
+    }
 
     if (!fs::exists(emuenv.vita_fs_path / "ux0" / "app" / TITLE_ID / "eboot.bin")) {
         fail(fmt::format("Soul Sacrifice Delta ({}) is not installed in {}.\nSet [paths] vita_fs in ss-delta.ini.",
@@ -479,7 +520,7 @@ int main(int argc, char *argv[]) {
         window = w;
         if (!window)
             return;
-        SDL_SetWindowTitle(window, WINDOW_NAME);
+        SDL_SetWindowTitle(window, window_name.c_str());
         // the game's own icon, from the player's installed copy
         const fs::path icon_path = emuenv.vita_fs_path / "ux0" / "app" / TITLE_ID / "sce_sys" / "icon0.png";
         int icon_w = 0, icon_h = 0, channels = 0;
@@ -557,7 +598,11 @@ int main(int argc, char *argv[]) {
     bool frame_rate_pending = settings.frame_rate != 30;
     hooks.on_tick = [&] {
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
-            // --dump-elfs: the modules the game loads at boot are written; quit
+            // --dump-elfs: the modules the game loads at boot are written. Ad Hoc Play's matching
+            // module loads only when that menu opens: load it now so it is written too (it is
+            // recompiled for the address it takes in play, tools/install-game.ps1). Then quit.
+            if (!load_sys_module(emuenv, SCE_SYSMODULE_NET_ADHOC_MATCHING))
+                LOG_ERROR("--dump-elfs: the ad hoc matching module could not be loaded");
             SDL_Event quit{};
             quit.type = SDL_EVENT_QUIT;
             SDL_PushEvent(&quit);
@@ -598,7 +643,7 @@ int main(int argc, char *argv[]) {
         // the same fields as Vita3K's window title, which tools/v3kdrive.py reads
         const auto &cc = emuenv.cfg.current_config;
         const auto size = emuenv.display.next_rendered_frame.image_size;
-        const auto title = fmt::format("{} | {} | {} FPS ({} ms) | {}x{} | {}", WINDOW_NAME, cc.backend_renderer,
+        const auto title = fmt::format("{} | {} | {} FPS ({} ms) | {}x{} | {}", window_name, cc.backend_renderer,
             emuenv.fps, emuenv.ms_per_frame, static_cast<int>(size.x * cc.resolution_multiplier),
             static_cast<int>(size.y * cc.resolution_multiplier), cc.screen_filter);
         SDL_SetWindowTitle(window, title.c_str());

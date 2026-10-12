@@ -54,4 +54,13 @@ std::vector<AssignedAddr> get_all_assigned_addrs();
 AssignedAddr get_selected_assigned_addr(int32_t &outIndex);
 void init_address(int32_t &outIndex, uint32_t &netAddr, uint32_t &broadcastAddr);
 
+// ss-delta: ad hoc between copies on one PC. Copy n (1 to LOCAL_ADHOC_MAX) has the address
+// 127.0.0.n instead of a network adapter's: ad hoc sockets bound to any address bind to it, and a
+// broadcast goes to every other copy's address (loopback has no broadcast).
+constexpr int LOCAL_ADHOC_MAX = 4;
+void set_local_adhoc(int player); // 0: off, Vita3K's way (a network adapter and its broadcast)
+int local_adhoc_player();
+uint32_t local_adhoc_addr(int player); // network byte order
+bool is_local_adhoc_broadcast(uint32_t addr); // network byte order
+
 } // namespace net_utils

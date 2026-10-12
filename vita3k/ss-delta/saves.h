@@ -15,7 +15,7 @@
 // with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-// The game's save on the PC: ux0:user/00/savedata/PCSA00152/ in the Vita file system holds
+// The game's save on the PC: ux0:user/<user>/savedata/PCSA00152/ in the Vita file system holds
 // datag0001.bin and system.bin, each with a .bak copy, unencrypted, plus Vita3K's record of the
 // game's save slot 1 (SlotParam_1.bin). A save decrypted on a Vita (VitaShell, Apollo) has the
 // same four files.
@@ -26,6 +26,14 @@
 #include <string>
 
 namespace ss_delta {
+
+// The Vita user whose save the functions below use: "00" (player 1) unless set; player N is user
+// N-1 (main.cpp).
+void set_save_user(const std::string &user_id);
+
+// A new player's first start: copies user `from_user`'s save of the game to user `to_user`, when
+// that user has none yet. Returns false with the reason in `message` on an error.
+bool copy_save_to_user(const fs::path &vita_fs, const std::string &from_user, const std::string &to_user, std::string &message);
 
 // The game has three save slots. Copies a save into slot `slot` (1-3) from a folder or a .zip that
 // holds a datag<n>.bin (in any subfolder; .bak copies and system.bin optional). The save folder as

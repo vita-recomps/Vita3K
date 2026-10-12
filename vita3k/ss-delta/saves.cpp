@@ -48,8 +48,10 @@ std::string data_name(int slot, const char *ext) {
     return fmt::format("datag{:04}{}", slot, ext);
 }
 
-fs::path save_dir(const fs::path &vita_fs) {
-    return vita_fs / "ux0" / "user" / "00" / "savedata" / "PCSA00152";
+std::string save_user = "00";
+
+fs::path save_dir(const fs::path &vita_fs, const std::string &user_id = save_user) {
+    return vita_fs / "ux0" / "user" / user_id / "savedata" / "PCSA00152";
 }
 
 std::string lower_name(const std::string &path) {
@@ -146,6 +148,31 @@ SceAppUtilSaveDataSlotParam slot_param(int slot) {
 }
 
 } // namespace
+
+void set_save_user(const std::string &user_id) {
+    save_user = user_id;
+}
+
+bool copy_save_to_user(const fs::path &vita_fs, const std::string &from_user, const std::string &to_user, std::string &message) {
+    const fs::path from = save_dir(vita_fs, from_user), to = save_dir(vita_fs, to_user);
+    if (fs::exists(to)) {
+        message = fmt::format("user {} has a save already", to_user);
+        return true;
+    }
+    if (!fs::exists(from)) {
+        message = fmt::format("user {} has no save to copy", from_user);
+        return true;
+    }
+    boost::system::error_code ec;
+    fs::create_directories(to.parent_path(), ec);
+    fs::copy(from, to, fs::copy_options::recursive, ec);
+    if (ec) {
+        message = fmt::format("copying {} to {} failed: {}", fs_utils::path_to_utf8(from), fs_utils::path_to_utf8(to), ec.message());
+        return false;
+    }
+    message = fmt::format("copied user {}'s save to user {}", from_user, to_user);
+    return true;
+}
 
 bool import_save(const fs::path &vita_fs, const fs::path &source, int slot, const fs::path &backup_dir, std::string &message) {
     if (slot < 1 || slot > MAX_SLOT) {

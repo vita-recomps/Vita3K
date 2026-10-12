@@ -335,6 +335,8 @@ void PipelineCache::read_pipeline_cache() {
 }
 
 void PipelineCache::save_pipeline_cache() {
+    if (state.shader_cache_read_only)
+        return;
     // first save the shader hashes
     // do a copy for thread safety
     std::vector<ShadersHash> shader_cache_copy;
@@ -507,7 +509,7 @@ vk::PipelineShaderStageCreateInfo PipelineCache::retrieve_shader(const SceGxmPro
     LOG_INFO("Generating vulkan spv shader {}", hash_text);
     const std::string shader_version = fmt::format("vk{}", shader::CURRENT_VERSION);
 
-    shader::usse::SpirvCode source = load_spirv_shader(*program, state.features, true, hints, maskupdate, state.shaders_path, state.shaders_log_path, shader_version, true);
+    shader::usse::SpirvCode source = load_spirv_shader(*program, state.features, true, hints, maskupdate, state.shaders_path, state.shaders_log_path, shader_version, true, !state.shader_cache_read_only);
 
     vk::ShaderModuleCreateInfo shader_info{
         .codeSize = sizeof(uint32_t) * source.size(),

@@ -47,6 +47,12 @@ Address aot_halt();
 // SSD_AOT_NATIVE=1 with recompiled modules: threads run on NativeCPU, without the JIT
 bool aot_native_cpu();
 
+// Where a module's native code expects its code segment: the page of its first function, found by
+// the name of the ELF it was generated from without the extension (e.g. "adhoc_matching"), or 0.
+// The loader places a relocatable module there when that memory is free, so that a module loaded
+// late in a session (ad hoc play) lands where its code was generated for (docs/decisions.md D8).
+Address aot_preferred_base(const std::string &module_stem);
+
 // The native function for a guest entry address (bit 0 set for Thumb), or null. A module's
 // functions become visible once its code has been checked against guest memory.
 AotFn aot_lookup(uint32_t addr);

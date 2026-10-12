@@ -56,6 +56,9 @@ struct Config {
     // no network at all, as on a Vita in flight mode (ss-delta): NetCtl reports disconnected, HTTP
     // and SSL use the HLE modules and every request fails; not saved in config.yml
     bool offline = false;
+    // use the shader and pipeline caches without writing to them (ss-delta: a second copy of the
+    // game beside the first); not saved in config.yml
+    bool shader_cache_read_only = false;
 
     fs::path get_vita_fs_path() const {
         return fs_utils::utf8_to_path(vita_fs_path);

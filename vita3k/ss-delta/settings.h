@@ -41,6 +41,10 @@ struct Settings {
     int volume = 100;
     // [game]
     bool dlc = true; // record the add-ons (whose content is in the game's data) in the save
+    // [multiplayer]: Ad Hoc Play
+    bool lan = false; // copies on PCs in one network; false: copies on this PC (127.0.0.<player>)
+    int adapter = 0; // lan: the network adapter, as numbered in Vita3K's settings
+    int player_gamepad = 0; // 0: every gamepad, in the focused window; n: only the nth, also in the background
     // [recompiled]
     bool use_recompiled = true;
     bool jit = false; // keep the JIT for guest code without native code (NativeCPU otherwise)
@@ -69,7 +73,8 @@ struct Settings {
     std::vector<std::string> warnings; // lines that could not be used
 };
 
-// Reads ss-delta.ini from `dir`, writing the commented default first when there is none.
-Settings load_settings(const fs::path &dir);
+// Reads ss-delta.ini from `dir`, writing the commented default first when there is none. For
+// player 2 and up, ss-delta-player<N>.ini there (if any) overrides it.
+Settings load_settings(const fs::path &dir, int player = 1);
 
 } // namespace ss_delta

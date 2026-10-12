@@ -16,8 +16,14 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 #include <net/socket.h>
+#include <util/net_utils.h>
 
 #include <bit>
+
+#ifdef _WIN32
+// mstcpip.h's SIO_UDP_CONNRESET (that header clashes with net/types.h)
+constexpr DWORD SIO_UDP_CONNRESET_ = 0x9800000C; // _WSAIOW(IOC_VENDOR, 12)
+#endif
 
 static SceNetSockaddr convertP2PToPosix(const SceNetSockaddr *addr) {
     if (!addr) {
@@ -68,7 +74,19 @@ static int p2pSocketTypeToPosixSocketType(int type) {
 }
 
 P2PSocket::P2PSocket(int domain, int type, int protocol)
-    : PosixSocket(domain, p2pSocketTypeToPosixSocketType(type), protocol) { sce_type = type; }
+    : PosixSocket(domain, p2pSocketTypeToPosixSocketType(type), protocol) {
+    sce_type = type;
+#ifdef _WIN32
+    // ss-delta: a datagram to a port nobody listens on (a peer that left, or a local copy that
+    // is not running) makes Windows fail the socket's next receive with WSAECONNRESET; a Vita
+    // ignores it
+    if (type == SCE_NET_SOCK_DGRAM_P2P) {
+        BOOL report = FALSE;
+        DWORD returned = 0;
+        WSAIoctl(sock, SIO_UDP_CONNRESET_, &report, sizeof(report), nullptr, 0, &returned, nullptr, nullptr);
+    }
+#endif
+}
 
 SocketPtr P2PSocket::accept(SceNetSockaddr *addr, unsigned int *addrlen, int &err) {
     const auto res = std::dynamic_pointer_cast<PosixSocket>(PosixSocket::accept(addr, addrlen, err));
@@ -93,12 +111,30 @@ int P2PSocket::recv_packet(void *buf, unsigned int len, int flags, SceNetSockadd
 }
 
 int P2PSocket::send_packet(const void *msg, unsigned int len, int flags, const SceNetSockaddr *to, unsigned int tolen) {
-    const auto p2p_to = convertP2PToPosix(to);
+    auto p2p_to = convertP2PToPosix(to);
+    auto &to_in = reinterpret_cast<SceNetSockaddrIn &>(p2p_to);
+    if (to && net_utils::is_local_adhoc_broadcast(to_in.sin_addr.s_addr)) {
+        // ss-delta, copies on one PC: a broadcast is a datagram to each other copy
+        int res = static_cast<int>(len);
+        for (int player = 1; player <= net_utils::LOCAL_ADHOC_MAX; player++) {
+            if (player == net_utils::local_adhoc_player())
+                continue;
+            to_in.sin_addr.s_addr = net_utils::local_adhoc_addr(player);
+            const int sent = PosixSocket::send_packet(msg, len, flags, &p2p_to, tolen);
+            if (sent < 0)
+                res = sent;
+        }
+        return res;
+    }
     return PosixSocket::send_packet(msg, len, flags, &p2p_to, tolen);
 }
 
 int P2PSocket::bind(const SceNetSockaddr *addr, unsigned int addrlen) {
-    const auto p2p_addr = convertP2PToPosix(addr);
+    auto p2p_addr = convertP2PToPosix(addr);
+    // ss-delta, copies on one PC: each binds its own address, so their ports do not collide
+    auto &addr_in = reinterpret_cast<SceNetSockaddrIn &>(p2p_addr);
+    if (net_utils::local_adhoc_player() && addr_in.sin_addr.s_addr == htonl(INADDR_ANY))
+        addr_in.sin_addr.s_addr = net_utils::local_adhoc_addr(net_utils::local_adhoc_player());
     return PosixSocket::bind(&p2p_addr, addrlen);
 }
 

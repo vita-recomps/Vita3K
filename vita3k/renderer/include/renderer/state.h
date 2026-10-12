@@ -88,6 +88,9 @@ struct State {
     fs::path vita_fs_path;
     fs::path shaders_path;
     fs::path shaders_log_path;
+    // ss-delta: use the shader and pipeline caches without writing to them (a second copy of the
+    // game running beside the first, which keeps them up to date)
+    bool shader_cache_read_only = false;
 
     FrameHost *frame = nullptr;
 

@@ -20,6 +20,8 @@
 #include <util/fs.h>
 #include <util/string_utils.h>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <charconv>
 #include <fstream>
@@ -63,6 +65,19 @@ volume = 100
 ; game's own data since update 1.30; PSN, which recorded the purchases, is closed. The save's
 ; system.bin is changed once (a copy goes to ss-delta/save-backups/).
 dlc = true
+
+[multiplayer]
+; Ad Hoc Play (Librom, Network). Start one copy per player: ss-delta.exe is player 1, and
+; "ss-delta.exe --player 2" (run-player2.bat) player 2, up to 4. Each player has a Vita user and
+; saves of its own (player 1's are copied on its first start), and its log and config in
+; ss-delta/player<N>/. ss-delta-player<N>.ini next to this file overrides settings for player N.
+; local: the copies run on this PC. lan: on PCs in one network, as in Vita3K (UDP broadcasts on
+; the network adapter numbered `adapter`, 0 the first; allow ss-delta.exe through the firewall).
+network = local
+;adapter = 0
+; 0: every gamepad drives the window in focus. 1-4: only that gamepad, also while the window is in
+; the background (two players at one PC, a gamepad each; set it in ss-delta-player<N>.ini).
+gamepad = 0
 
 [recompiled]
 ; Run the recompiled modules natively (false: everything on the JIT, for comparison).
@@ -148,7 +163,7 @@ std::string trim(const std::string &s) {
 
 } // namespace
 
-Settings load_settings(const fs::path &dir) {
+Settings load_settings(const fs::path &dir, int player) {
     Settings out;
     out.vita_fs = dir / "fs" / "";
     out.recompiled = dir;
@@ -158,10 +173,13 @@ Settings load_settings(const fs::path &dir) {
         fs::ofstream file(path);
         file << DEFAULT_INI;
     }
+    std::vector<fs::path> paths{ path };
+    if (player >= 2 && fs::exists(dir / fmt::format("ss-delta-player{}.ini", player)))
+        paths.push_back(dir / fmt::format("ss-delta-player{}.ini", player));
 
     std::map<std::string, std::string> values; // "section.key" -> value
-    {
-        fs::ifstream file(path);
+    for (const auto &file_path : paths) {
+        fs::ifstream file(file_path);
         std::string line, section;
         bool first_line = true;
         while (std::getline(file, line)) {
@@ -236,6 +254,14 @@ Settings load_settings(const fs::path &dir) {
     }
     get_number("audio.volume", out.volume, 0, 100);
     get_bool("game.dlc", out.dlc);
+    if (const auto v = get("multiplayer.network")) {
+        if (string_utils::tolower(*v) == "lan" || string_utils::tolower(*v) == "local")
+            out.lan = string_utils::tolower(*v) == "lan";
+        else
+            out.warnings.push_back("multiplayer.network = " + *v);
+    }
+    get_number("multiplayer.adapter", out.adapter, 0, 63);
+    get_number("multiplayer.gamepad", out.player_gamepad, 0, 4);
     get_bool("recompiled.enabled", out.use_recompiled);
     get_bool("recompiled.jit", out.jit);
     if (const auto v = get("debug.log_level")) {

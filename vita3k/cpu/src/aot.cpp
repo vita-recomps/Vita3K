@@ -307,6 +307,19 @@ AotFn checked(const std::pair<AotFn, LoadedModule *> &entry) {
 
 } // namespace
 
+Address aot_preferred_base(const std::string &module_stem) {
+    for (const auto &m : registry.modules) {
+        if (!m->module || !m->module->name || m->module->function_count == 0)
+            continue;
+        std::string name = m->module->name;
+        if (const auto dot = name.rfind('.'); dot != std::string::npos)
+            name.resize(dot);
+        if (name == module_stem)
+            return (m->module->functions[0].addr & ~1u) & ~0xFFFu;
+    }
+    return 0;
+}
+
 AotFn aot_lookup(uint32_t addr) {
     const auto it = registry.functions.find(addr);
     return it == registry.functions.end() ? nullptr : checked(it->second);

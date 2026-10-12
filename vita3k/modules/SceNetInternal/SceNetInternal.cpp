@@ -19,11 +19,28 @@
 
 #include "../SceNet/SceNet.h"
 
+#include <mutex>
+#include <random>
+
 #include <util/tracy.h>
 TRACY_MODULE_NAME(SceNetInternal);
 
 EXPORT(int, sceNetInternalInetPton, int af, const char *src, void *dst) {
     return CALL_EXPORT(sceNetInetPton, af, src, dst);
+}
+
+// ss-delta: called by the firmware's ad hoc matching module (adhoc_matching.suprx) with a pointer
+// to one word, which it then uses as a nonzero seed (taken modulo a range; 0 is replaced by 1).
+// Hypothesis: a random number, as from sceKernelGetRandomNumber.
+EXPORT(int, SceNetInternal_689B9D7D, uint32_t *out) {
+    TRACY_FUNC(SceNetInternal_689B9D7D, out);
+    static std::mt19937 generator{ std::random_device{}() };
+    static std::mutex mutex;
+    if (!out)
+        return 0;
+    const std::lock_guard<std::mutex> lock(mutex);
+    *out = generator();
+    return 0;
 }
 
 EXPORT(int, sceNetInternalIcmConnect, int sid, int flags) {
