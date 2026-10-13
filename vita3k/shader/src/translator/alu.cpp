@@ -30,6 +30,27 @@
 using namespace shader;
 using namespace usse;
 
+// USSE min/max return the other operand when one is NaN (IEEE minNum/maxNum). FMin/FMax leave that
+// case undefined, and NVIDIA does not honour NMin/NMax either (it folds max(min(x, 1), 0) into a
+// saturate that turns NaN into 0, which whitens Soul Sacrifice Delta's arena floor). So the NaN
+// test is done on the bits, which no float fast-math assumption can remove.
+static spv::Id make_usse_min_max(spv::Builder &b, spv::Id std_builtins, bool is_max, spv::Id type, spv::Id lhs, spv::Id rhs) {
+    const spv::Id result = b.createBuiltinCall(type, std_builtins, is_max ? GLSLstd450FMax : GLSLstd450FMin, { lhs, rhs });
+    if (b.getScalarTypeWidth(type) != 32)
+        return result;
+    const int comp_count = b.getNumTypeComponents(type);
+    const spv::Id uint_type = utils::make_vector_or_scalar_type(b, b.makeUintType(32), comp_count);
+    const spv::Id bool_type = utils::make_vector_or_scalar_type(b, b.makeBoolType(), comp_count);
+    const spv::Id abs_mask = utils::make_uniform_vector_from_type(b, uint_type, 0x7FFFFFFFu);
+    const spv::Id inf_bits = utils::make_uniform_vector_from_type(b, uint_type, 0x7F800000u);
+    const auto is_nan = [&](spv::Id val) {
+        const spv::Id bits = b.createBinOp(spv::OpBitwiseAnd, uint_type, b.createUnaryOp(spv::OpBitcast, uint_type, val), abs_mask);
+        return b.createBinOp(spv::OpUGreaterThan, bool_type, bits, inf_bits);
+    };
+    const spv::Id rhs_checked = b.createTriOp(spv::OpSelect, type, is_nan(rhs), lhs, result);
+    return b.createTriOp(spv::OpSelect, type, is_nan(lhs), rhs, rhs_checked);
+}
+
 static spv::Id postprocess_dot_result_for_store(spv::Builder &b, spv::Id dot_result, shader::usse::Imm4 mask) {
     const std::size_t comp_count = utils::dest_mask_to_comp_count(mask);
     if (comp_count == 1) {
@@ -460,13 +481,13 @@ spv::Id USSETranslatorVisitor::do_alu_op(Instruction &inst, const Imm4 source_ma
 
     case Opcode::VMIN:
     case Opcode::VF16MIN: {
-        result = m_b.createBuiltinCall(source_type, std_builtins, GLSLstd450FMin, { vsrc1, vsrc2 });
+        result = make_usse_min_max(m_b, std_builtins, false, source_type, vsrc1, vsrc2);
         break;
     }
 
     case Opcode::VMAX:
     case Opcode::VF16MAX: {
-        result = m_b.createBuiltinCall(source_type, std_builtins, GLSLstd450FMax, { vsrc1, vsrc2 });
+        result = make_usse_min_max(m_b, std_builtins, true, source_type, vsrc1, vsrc2);
         break;
     }
 
@@ -954,12 +975,12 @@ bool USSETranslatorVisitor::sop2(
 
         case Opcode::FMIN:
         case Opcode::VMIN: {
-            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450FMin, { lhs, rhs });
+            return make_usse_min_max(m_b, std_builtins, false, type, lhs, rhs);
         }
 
         case Opcode::FMAX:
         case Opcode::VMAX: {
-            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450FMax, { lhs, rhs });
+            return make_usse_min_max(m_b, std_builtins, true, type, lhs, rhs);
         }
 
         default: {
@@ -1159,12 +1180,12 @@ bool shader::usse::USSETranslatorVisitor::sop2m(Imm2 pred,
 
         case Opcode::FMIN:
         case Opcode::VMIN: {
-            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450FMin, { lhs, rhs });
+            return make_usse_min_max(m_b, std_builtins, false, type, lhs, rhs);
         }
 
         case Opcode::FMAX:
         case Opcode::VMAX: {
-            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450FMax, { lhs, rhs });
+            return make_usse_min_max(m_b, std_builtins, true, type, lhs, rhs);
         }
 
         default: {
