@@ -53,9 +53,9 @@ window_scale = 1
 ; ss-delta/screenshots/ next to ss-delta.exe.
 fullscreen = false
 vsync = true
-; The game's frame rate: 30 (as on the Vita) or 60. The game keeps its speed at 60; loading
+; The game's frame rate: 60, or 30 as on the Vita. The game keeps its speed at 60; loading
 ; screens still run at 30 (they don't finish at 60).
-frame_rate = 30
+frame_rate = 60
 ; How the picture is scaled to the window: Bilinear, Nearest, Bicubic, FXAA, FSR.
 filter = Bilinear
 
