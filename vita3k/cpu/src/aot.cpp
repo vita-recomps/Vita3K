@@ -55,6 +55,7 @@ struct LoadedModule {
     uint32_t lo = 0, hi = 0; // [first entry, last entry]
     uint32_t end = 0; // end of the last function's code
     Address reserved = 0; // the code pages, held until the module loads (aot_release_reservation)
+    Address hold_base = 0, hold_size = 0; // what is held, to hold again when the module unloads
     std::atomic<Verified> verified{ Verified::unknown };
     std::mutex verify_mutex;
 };
@@ -272,8 +273,12 @@ void aot_init(MemState &mem, Address sentinel) {
             hold_end = std::max(code_end, std::min(hold_end, placed[i + 1]->lo & ~0xFFFu));
         const std::string name = fmt::format("aot_reserve:{}", m.module->name);
         m.reserved = try_alloc_at(mem, page, hold_end - page, name.c_str());
-        if (!m.reserved)
+        m.hold_base = page;
+        m.hold_size = hold_end - page;
+        if (!m.reserved) {
             m.reserved = try_alloc_at(mem, page, code_end - page, name.c_str());
+            m.hold_size = code_end - page;
+        }
         LOG_WARN_IF(!m.reserved, "AOT: {:08x}-{:08x} is already taken; {} may not load where its native code expects it", page, code_end, m.module->name);
     }
     registry.enabled = !registry.functions.empty();
@@ -342,6 +347,20 @@ void aot_release_reservation(MemState &mem, const std::string &module_stem) {
         if (name == module_stem) {
             free(mem, m->reserved);
             m->reserved = 0;
+        }
+    }
+}
+
+void aot_restore_reservation(MemState &mem, const std::string &module_stem) {
+    for (const auto &m : registry.modules) {
+        if (m->reserved || !m->hold_size || !m->module || !m->module->name)
+            continue;
+        std::string name = m->module->name;
+        if (const auto dot = name.rfind('.'); dot != std::string::npos)
+            name.resize(dot);
+        if (name == module_stem) {
+            m->reserved = try_alloc_at(mem, m->hold_base, m->hold_size, fmt::format("aot_reserve:{}", m->module->name).c_str());
+            LOG_WARN_IF(!m->reserved, "AOT: {:08x} is taken after {} unloaded; its next load may not match its native code", m->hold_base, m->module->name);
         }
     }
 }

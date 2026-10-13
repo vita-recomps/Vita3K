@@ -864,6 +864,12 @@ int unload_self(KernelState &kernel, MemState &mem, KernelModule &module) {
         kernel.invalidate_jit_cache(segment.vaddr.address(), segment.memsz);
         free(mem, module.info.segments[i].vaddr.address());
     }
+    {
+        // ss-delta: a recompiled module's place is held again until its next load
+        std::string stem = module.info.path;
+        stem = stem.substr(stem.find_last_of("/:") + 1);
+        aot_restore_reservation(mem, stem.substr(0, stem.rfind('.')));
+    }
 
     {
         const std::lock_guard<std::mutex> lock(kernel.mutex);
