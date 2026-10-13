@@ -59,7 +59,7 @@ std::vector<std::string> split_list(const std::string &s) {
 }
 
 // A key by its W3C code (KeyX, ArrowUp, ShiftRight ...), a single letter or digit, or the names
-// SDL and decimation.ini use (Up, Return, Left Shift, Keypad 1 ...)
+// SDL uses (Up, Return, Left Shift, Keypad 1 ...)
 PhysicalKeyCode parse_key(const std::string &name) {
     if (const auto code = input::physical_key_from_code_name(name); code != PhysicalKeyCode::Unbound)
         return code;
