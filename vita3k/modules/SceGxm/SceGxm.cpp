@@ -1832,6 +1832,9 @@ EXPORT(SceGxmColorSurfaceType, sceGxmColorSurfaceGetType, const SceGxmColorSurfa
 
 EXPORT(int, sceGxmColorSurfaceInit, SceGxmColorSurface *surface, SceGxmColorFormat colorFormat, SceGxmColorSurfaceType surfaceType, SceGxmColorSurfaceScaleMode scaleMode, SceGxmOutputRegisterSize outputRegisterSize, uint32_t width, uint32_t height, uint32_t strideInPixels, Ptr<void> data) {
     TRACY_FUNC(sceGxmColorSurfaceInit, surface, colorFormat, surfaceType, scaleMode, outputRegisterSize, width, height, strideInPixels, data);
+    // the game's color surfaces (their sizes are its internal resolutions); set up rarely, so logged
+    LOG_INFO("Color surface {}x{} (stride {}), format {:#x}, scale mode {}", width, height, strideInPixels,
+        static_cast<uint32_t>(colorFormat), static_cast<int>(scaleMode));
     if (!surface || !data)
         return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
 
@@ -2082,6 +2085,9 @@ EXPORT(int, sceGxmCreateRenderTarget, const SceGxmRenderTargetParams *params, Pt
     rt->scenesPerFrame = params->scenesPerFrame;
     rt->driverMemBlock = params->driverMemBlock;
     emuenv.gxm.render_targets.emplace(rt, renderTarget->address());
+    // the game's render-target sizes (its internal resolutions); created rarely, so logged
+    LOG_INFO("Render target {}x{}, {} scene(s)/frame, multisample {}, flags {:#x}", params->width, params->height,
+        params->scenesPerFrame, static_cast<int>(params->multisampleMode), params->flags);
 
     return 0;
 }
