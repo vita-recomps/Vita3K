@@ -466,19 +466,31 @@ if(TRACY_ENABLE_ON_CORE_COMPONENTS)
 	target_link_libraries(vita3k PRIVATE tracy)
 endif()
 
-# ss-delta: Soul Sacrifice Delta on the SDL frontend, without the Qt interface (ss-delta/main.cpp).
-# It runs from the folder Vita3K.exe is built into, whose data and shaders-builtin it uses.
+# Single-game executables on the SDL frontend, without the Qt interface (game-frontend/profile.h):
+# the shared frontend is a library, and each game is a small executable with its profile
+# (games/<id>/main.cpp). They run from the folder Vita3K.exe is built into, whose data and
+# shaders-builtin they use.
 if(WIN32)
-	add_executable(ss-delta WIN32
-		ss-delta/main.cpp ss-delta/settings.cpp ss-delta/settings.h ss-delta/input.cpp ss-delta/input.h
-		ss-delta/saves.cpp ss-delta/saves.h ss-delta/dlc.cpp ss-delta/dlc.h
-		interface.cpp interface.h performance.cpp
-		util/src/vc_runtime_checker.cpp
-		resource.h ss-delta/ss-delta.ico ss-delta/ss-delta.rc Windows.manifest)
-	target_link_libraries(ss-delta PRIVATE app audio compat config ctrl dialog display ime lang gdbstub gxm io miniz modules motion packages patch renderer sdl-frontend shader touch util psvpfsparser pugixml::pugixml SDL3::SDL3 Version)
+	add_library(game-frontend STATIC
+		game-frontend/frontend.cpp game-frontend/profile.h game-frontend/settings.cpp game-frontend/settings.h
+		game-frontend/input.cpp game-frontend/input.h
+		interface.cpp interface.h performance.cpp)
+	target_link_libraries(game-frontend PUBLIC app audio compat config ctrl dialog display ime lang gdbstub gxm io miniz modules motion packages patch renderer sdl-frontend shader touch util psvpfsparser pugixml::pugixml SDL3::SDL3 Version)
 	if(USE_DISCORD_RICH_PRESENCE)
-		target_link_libraries(ss-delta PRIVATE discord-rpc)
+		target_link_libraries(game-frontend PUBLIC discord-rpc)
 	endif()
-	set_target_properties(ss-delta PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-	add_dependencies(ss-delta vita3k)
+
+	# add_game(<target> <sources>...): a game's executable on the shared frontend
+	function(add_game target)
+		add_executable(${target} WIN32 ${ARGN} util/src/vc_runtime_checker.cpp resource.h Windows.manifest)
+		target_link_libraries(${target} PRIVATE game-frontend)
+		set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+		add_dependencies(${target} vita3k)
+	endfunction()
+
+	# Soul Sacrifice Delta (PCSA00152)
+	add_game(ss-delta games/ss-delta/main.cpp games/ss-delta/saves.cpp games/ss-delta/saves.h
+		games/ss-delta/dlc.cpp games/ss-delta/dlc.h games/ss-delta/ss-delta.ico games/ss-delta/ss-delta.rc)
+	# Shinobido 2: Revenge of Zen (PCSE00015)
+	add_game(shinobido2 games/shinobido2/main.cpp)
 endif()

@@ -31,7 +31,7 @@
 struct Config;
 struct EmuEnvState;
 
-namespace ss_delta {
+namespace game_frontend {
 
 // Applies [keyboard] and [gamepad] (Vita button -> keys / gamepad button) to the config; lines
 // that can't be used are added to `warnings`.
@@ -56,7 +56,7 @@ private:
 // ones the test driver holds through the input pipe
 class Touches {
 public:
-    void configure(const std::vector<Settings::TouchBinding> &touches, std::vector<std::string> &warnings);
+    void configure(const std::vector<TouchBinding> &touches, std::vector<std::string> &warnings);
     // once a frame: the held fingers into the touch state
     void update(EmuEnvState &emuenv, const Keyboard &keyboard);
 
@@ -70,4 +70,4 @@ private:
     std::vector<Binding> bindings;
 };
 
-} // namespace ss_delta
+} // namespace game_frontend

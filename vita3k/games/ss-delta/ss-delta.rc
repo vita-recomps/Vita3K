@@ -18,7 +18,7 @@
 // ss-delta.exe: its own icon (no game artwork; the window shows the game's icon at run time) and
 // version information. The version numbers are Vita3K's, which ss-delta is built from.
 
-#include "../resource.h"
+#include "../../resource.h"
 
 #include <windows.h>
 

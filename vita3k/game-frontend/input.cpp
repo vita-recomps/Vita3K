@@ -30,7 +30,7 @@
 #include <cctype>
 #include <mutex>
 
-namespace ss_delta {
+namespace game_frontend {
 
 using input::PhysicalKeyCode;
 
@@ -241,7 +241,7 @@ void Keyboard::update(EmuEnvState &emuenv) {
     kb.axes[3] = axis(cfg.keyboard_rightstick_up, cfg.keyboard_rightstick_up_alt, cfg.keyboard_rightstick_down, cfg.keyboard_rightstick_down_alt);
 }
 
-void Touches::configure(const std::vector<Settings::TouchBinding> &touches, std::vector<std::string> &warnings) {
+void Touches::configure(const std::vector<TouchBinding> &touches, std::vector<std::string> &warnings) {
     bindings.clear();
     for (const auto &touch : touches) {
         Binding b{ touch.x, touch.y };
@@ -301,4 +301,4 @@ void Touches::update(EmuEnvState &emuenv, const Keyboard &keyboard) {
     emuenv.touch.held[SCE_TOUCH_PORT_FRONT] = std::move(held);
 }
 
-} // namespace ss_delta
+} // namespace game_frontend
