@@ -225,30 +225,41 @@ void unscale_depth_uvs(SceGxmProgram &program) {
     LOG_INFO_IF(replaced, "full_3d: depth UV scale set to 1.0 in a {} shader", program.is_vertex() ? "vertex" : "fragment");
 }
 
-// The 60 fps study (docs/03-plan.md Phase 8): the game paces its main loop with a frame timer
+// The frame rate (docs/03-plan.md, 60 fps): the game paces its main loop with a frame timer
 // created for 30 fps (0x812ab888: movs r0, #30), whose period in microseconds is the first u64 of
 // the timer object (*(*0x81c957cc)), and flips every 2nd vblank (threshold at 0x81d3a630). Both
-// are data, so they are changed in guest memory once the game has set them up.
-// Returns true when done.
-bool apply_frame_rate(EmuEnvState &emuenv, int fps) {
+// are data, so they are changed in guest memory once the game has set them up. Game logic steps
+// by the measured frame time, so it keeps its speed at 60 fps, but the loading screen does not
+// finish with frames shorter than about 1/45 s: its "roading_loop" animation never gets told to
+// stop. So loading screens run at 30 fps: the NowLoadingTask singleton (*0x81c9603c) shows one
+// while its state (+0xa4) is 2, 3 or 5 (opening, "roading_loop", "roading_end"; 0x812b58ec). After
+// a quest it plays the loop backwards (6) and rests in 4 until reset, so those stay at 60.
+// Called every frame; returns the rate it set (0: not yet).
+int update_frame_rate(EmuEnvState &emuenv, int fps, int current) {
     auto &mem = emuenv.mem;
     const auto u32 = [&](Address a) -> uint32_t * { return is_valid_addr(mem, a) ? Ptr<uint32_t>(a).get(mem) : nullptr; };
     uint32_t *const holder = u32(0x81c957cc);
     if (!holder || !*holder)
-        return false;
+        return 0;
     uint32_t *const timer = u32(*holder);
-    if (!timer || !*timer || !is_valid_addr(mem, *timer + 7))
-        return false;
-    uint64_t *const period = Ptr<uint64_t>(*timer).get(mem);
     uint32_t *const flip = u32(0x81d3a630);
-    if (*period != 1000000 / 30 || !flip || *flip != 2) {
-        LOG_WARN("frame_rate: unexpected frame timer {} us / flip threshold {}; left alone", *period, flip ? *flip : 0);
-        return true;
+    if (!timer || !*timer || !is_valid_addr(mem, *timer + 7) || !flip)
+        return 0;
+    uint64_t *const period = Ptr<uint64_t>(*timer).get(mem);
+    const uint32_t *const loading_task = u32(0x81c9603c);
+    const uint32_t *const loading_state = loading_task && *loading_task ? u32(*loading_task + 0xa4) : nullptr;
+    const uint32_t state = loading_state ? *loading_state : 0;
+    const int want = state == 2 || state == 3 || state == 5 ? 30 : fps;
+    if (want == current && *period == 1000000u / want)
+        return current;
+    if ((*period != 1000000u / 30 && *period != 1000000u / fps) || (*flip != 2 && *flip != 60u / fps)) {
+        LOG_WARN("frame_rate: unexpected frame timer {} us / flip threshold {}; left alone", *period, *flip);
+        return -1;
     }
-    *period = 1000000 / fps;
-    *flip = 60 / fps;
-    LOG_INFO("frame_rate: {} fps (frame timer {} us, flip every {} vblank)", fps, *period, *flip);
-    return true;
+    *period = 1000000 / want;
+    *flip = 60 / want;
+    LOG_INFO("frame_rate: {} fps{} (loading state {}, frame timer {} us, flip every {} vblank)", want, want != fps ? " for a loading screen" : "", state, *period, *flip);
+    return want;
 }
 
 } // namespace
@@ -595,7 +606,7 @@ int main(int argc, char *argv[]) {
         }
     };
     const auto session_start = std::chrono::steady_clock::now();
-    bool frame_rate_pending = settings.frame_rate != 30;
+    int frame_rate = 30; // what update_frame_rate last set (-1: left alone)
     hooks.on_tick = [&] {
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
             // --dump-elfs: the modules the game loads at boot are written. Ad Hoc Play's matching
@@ -608,9 +619,8 @@ int main(int argc, char *argv[]) {
             SDL_PushEvent(&quit);
             dump_elfs_seconds = 0;
         }
-        if (frame_rate_pending && std::chrono::steady_clock::now() - session_start > std::chrono::seconds(settings.frame_rate_delay)
-            && apply_frame_rate(emuenv, settings.frame_rate))
-            frame_rate_pending = false;
+        if (settings.frame_rate != 30 && frame_rate != -1)
+            frame_rate = update_frame_rate(emuenv, settings.frame_rate, frame_rate);
         // [touch] bindings and the test driver's fingers
         touches.update(emuenv, keyboard);
         // screenshots the test driver asked for through the input pipe

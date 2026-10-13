@@ -53,6 +53,9 @@ window_scale = 1
 ; ss-delta/screenshots/ next to ss-delta.exe.
 fullscreen = false
 vsync = true
+; The game's frame rate: 30 (as on the Vita) or 60. The game keeps its speed at 60; loading
+; screens still run at 30 (they don't finish at 60).
+frame_rate = 30
 ; How the picture is scaled to the window: Bilinear, Nearest, Bicubic, FXAA, FSR.
 filter = Bilinear
 
@@ -242,6 +245,12 @@ Settings load_settings(const fs::path &dir, int player) {
     get_number("display.window_scale", out.window_scale, 1, 4);
     get_bool("display.fullscreen", out.fullscreen);
     get_bool("display.vsync", out.vsync);
+    if (const auto v = get("display.frame_rate")) {
+        if (*v == "30" || *v == "60")
+            out.frame_rate = std::stoi(*v);
+        else
+            out.warnings.push_back("display.frame_rate = " + *v);
+    }
     if (const auto v = get("display.filter")) {
         static const std::vector<std::string> filters{ "Bilinear", "Nearest", "Bicubic", "FXAA", "FSR" };
         const auto it = std::find_if(filters.begin(), filters.end(), [&](const std::string &f) {
@@ -273,8 +282,6 @@ Settings load_settings(const fs::path &dir, int player) {
             out.warnings.push_back("debug.log_level = " + *v);
     }
     get_bool("debug.validation_layer", out.validation_layer);
-    get_number("debug.frame_rate", out.frame_rate, 30, 60);
-    get_number("debug.frame_rate_delay", out.frame_rate_delay, 0, 3600);
     std::map<std::string, Settings::TouchBinding> touches;
     for (const auto &[key, value] : values) {
         if (key.starts_with("keyboard."))

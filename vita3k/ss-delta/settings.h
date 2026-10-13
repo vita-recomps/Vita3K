@@ -36,6 +36,7 @@ struct Settings {
     int window_scale = 1; // window size as a multiple of 960x544
     bool fullscreen = false;
     bool vsync = true;
+    int frame_rate = 30; // 30 or 60: the game's frame timer and display flip rate (main.cpp update_frame_rate)
     std::string filter = "Bilinear";
     // [audio]
     int volume = 100;
@@ -51,8 +52,6 @@ struct Settings {
     // [debug]
     int log_level = 2; // spdlog: 0 trace ... 6 off
     bool validation_layer = false;
-    int frame_rate = 30; // the game's frame timer and display flip rate (study: 30 or 60)
-    int frame_rate_delay = 0; // seconds after start before frame_rate applies (study)
 
     // [keyboard] and [gamepad]: Vita button -> keys / gamepad button, applied by input.cpp
     std::map<std::string, std::string> keyboard, gamepad;
