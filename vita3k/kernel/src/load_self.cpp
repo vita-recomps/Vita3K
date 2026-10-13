@@ -650,10 +650,12 @@ SceUID load_self(KernelState &kernel, MemState &mem, const void *self, const std
                 auto alloc_name = fmt::format("{}:seg{}", self_path, seg_index);
 
                 // ss-delta: a relocatable module with recompiled code goes where that code was
-                // generated for, when free (cpu/aot.h aot_preferred_base)
+                // generated for, which aot_init keeps free for it (cpu/aot.h aot_preferred_base)
+                std::string stem = self_path.substr(self_path.find_last_of("/:") + 1);
+                stem = stem.substr(0, stem.rfind('.'));
+                if (seg_index == 0)
+                    aot_release_reservation(mem, stem);
                 if (isRelocatable && seg_index == 0) {
-                    std::string stem = self_path.substr(self_path.find_last_of("/:") + 1);
-                    stem = stem.substr(0, stem.rfind('.'));
                     if (const Address base = aot_preferred_base(stem)) {
                         segment_address = try_alloc_at(mem, base, seg_header.p_memsz, alloc_name.c_str());
                         LOG_INFO_IF(segment_address, "{}: code placed at {}, where its native code expects it", self_path, log_hex(base));

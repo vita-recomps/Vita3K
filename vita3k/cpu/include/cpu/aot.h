@@ -52,6 +52,9 @@ bool aot_native_cpu();
 // The loader places a relocatable module there when that memory is free, so that a module loaded
 // late in a session (ad hoc play) lands where its code was generated for (docs/decisions.md D8).
 Address aot_preferred_base(const std::string &module_stem);
+// aot_init holds each module's code pages so that nothing else is allocated there; the loader
+// releases them right before it places that module (by the same name stem as above).
+void aot_release_reservation(MemState &mem, const std::string &module_stem);
 
 // The native function for a guest entry address (bit 0 set for Thumb), or null. A module's
 // functions become visible once its code has been checked against guest memory.

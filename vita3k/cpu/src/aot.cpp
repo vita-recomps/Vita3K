@@ -19,6 +19,7 @@
 #include <cpu/aot_abi.h>
 #include <cpu/impl/aot_hooks.h>
 
+#include <mem/functions.h>
 #include <mem/state.h>
 #include <util/log.h>
 
@@ -53,6 +54,7 @@ struct LoadedModule {
     const armrecomp::AotModule *module = nullptr;
     uint32_t lo = 0, hi = 0; // [first entry, last entry]
     uint32_t end = 0; // end of the last function's code
+    Address reserved = 0; // the code pages, held until the module loads (aot_release_reservation)
     std::atomic<Verified> verified{ Verified::unknown };
     std::mutex verify_mutex;
 };
@@ -251,6 +253,29 @@ void aot_init(MemState &mem, Address sentinel) {
         m->end = mod.function_count ? m->hi + mod.functions[mod.function_count - 1].size : 0;
         LOG_INFO("AOT: {} ({} functions, {:08x}-{:08x}) from {}", mod.name, mod.function_count, m->lo, m->hi, m->path);
     }
+
+    // Hold each module's place so that nothing else is allocated there before it loads: a module
+    // loaded late (ad hoc play) otherwise finds it taken, depending on what the session did
+    // before, and its native code can't run. The segment is longer than the code (data after it),
+    // so the hold runs up to the next module's code, at most 256 KB past this one's.
+    std::vector<LoadedModule *> placed;
+    for (auto &m : registry.modules)
+        if (m->module && m->module->function_count)
+            placed.push_back(m.get());
+    std::sort(placed.begin(), placed.end(), [](const LoadedModule *a, const LoadedModule *b) { return a->lo < b->lo; });
+    for (size_t i = 0; i < placed.size(); i++) {
+        LoadedModule &m = *placed[i];
+        const Address page = m.lo & ~0xFFFu;
+        const Address code_end = (m.end + 0xFFFu) & ~0xFFFu;
+        Address hold_end = code_end + 0x40000;
+        if (i + 1 < placed.size())
+            hold_end = std::max(code_end, std::min(hold_end, placed[i + 1]->lo & ~0xFFFu));
+        const std::string name = fmt::format("aot_reserve:{}", m.module->name);
+        m.reserved = try_alloc_at(mem, page, hold_end - page, name.c_str());
+        if (!m.reserved)
+            m.reserved = try_alloc_at(mem, page, code_end - page, name.c_str());
+        LOG_WARN_IF(!m.reserved, "AOT: {:08x}-{:08x} is already taken; {} may not load where its native code expects it", page, code_end, m.module->name);
+    }
     registry.enabled = !registry.functions.empty();
 }
 
@@ -306,6 +331,20 @@ AotFn checked(const std::pair<AotFn, LoadedModule *> &entry) {
 }
 
 } // namespace
+
+void aot_release_reservation(MemState &mem, const std::string &module_stem) {
+    for (const auto &m : registry.modules) {
+        if (!m->reserved || !m->module || !m->module->name)
+            continue;
+        std::string name = m->module->name;
+        if (const auto dot = name.rfind('.'); dot != std::string::npos)
+            name.resize(dot);
+        if (name == module_stem) {
+            free(mem, m->reserved);
+            m->reserved = 0;
+        }
+    }
+}
 
 Address aot_preferred_base(const std::string &module_stem) {
     for (const auto &m : registry.modules) {
