@@ -245,7 +245,9 @@ std::optional<std::pair<float, float>> caution_eye(EmuEnvState &emuenv) {
 // the 1/60 step (the owner's playthrough); the two that ran twice as fast were the event scenes
 // after a load, without the scene flag. So only an event scene without the scene flag runs at 30
 // (the owner's suggestion, checked on the second-to-last mission); that is also the second or two
-// while any scene loads, before its flag is set. In play, boss fights and other scenes, 60 fps.
+// while any scene loads, before its flag is set. Outside missions there is no script controller
+// (the title, its menus and the hub): those run at 30 too, where menu animations step by a literal
+// 1/30 (the owner's request). In play, boss fights and other scenes, 60 fps.
 struct FrameRate {
     enum class Boot { Waiting, Set, TooLate };
     Boot boot = Boot::Waiting;
@@ -300,7 +302,8 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
     if (signals != state.signals && state.logged++ < 400)
         LOG_INFO("frame_rate: event scene {}, controller state {}, scene flag {}, HUD shown {}", signals[0], signals[1], signals[2], signals[3]);
     state.signals = signals;
-    const int scene = signals[0] == 1 && signals[2] == 0 ? 1 : 0;
+    const bool menus = controller <= 0;
+    const int scene = (signals[0] == 1 && signals[2] == 0) || menus ? 1 : 0;
     if (*fixed_flag) {
         // the fixed step: 1/60 in play at 60 fps, 1/30 in a scene at 30 (only values we know)
         const double from = static_cast<double>(scene ? 1.0f / 60.0f : 1.0f / 30.0f);
@@ -314,7 +317,7 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
         return;
     state.scene = scene;
     emuenv.display.vblank_start_count = scene ? 2 : 1;
-    LOG_INFO("frame_rate: {}", scene ? "an event scene after a load: 30 fps" : "60 fps");
+    LOG_INFO("frame_rate: {}", !scene ? "60 fps" : menus ? "menus (no mission): 30 fps" : "an event scene after a load: 30 fps");
 }
 
 } // namespace
