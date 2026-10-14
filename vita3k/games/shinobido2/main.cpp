@@ -241,8 +241,11 @@ std::optional<std::pair<float, float>> caution_eye(EmuEnvState &emuenv) {
 //   boss's intro, which follows a load;
 // - the HUD's shown byte (+0x1c of *0x8146c308): 0 in most scenes, 1 in play and boss fights, but
 //   also 1 through the second boss's intro.
-// A scene: an event scene, and the HUD hidden or no scene flag. In play (no event scene), boss
-// fights (flag set, HUD shown) and everything else, 60 fps.
+// Scenes with the scene flag set (opening scenes, boss intros and outros) play right at 60 with
+// the 1/60 step (the owner's playthrough); the two that ran twice as fast were the event scenes
+// after a load, without the scene flag. So only an event scene without the scene flag runs at 30
+// (the owner's suggestion, checked on the second-to-last mission); that is also the second or two
+// while any scene loads, before its flag is set. In play, boss fights and other scenes, 60 fps.
 struct FrameRate {
     enum class Boot { Waiting, Set, TooLate };
     Boot boot = Boot::Waiting;
@@ -297,7 +300,7 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
     if (signals != state.signals && state.logged++ < 400)
         LOG_INFO("frame_rate: event scene {}, controller state {}, scene flag {}, HUD shown {}", signals[0], signals[1], signals[2], signals[3]);
     state.signals = signals;
-    const int scene = signals[0] == 1 && (signals[3] == 0 || signals[2] == 0) ? 1 : 0;
+    const int scene = signals[0] == 1 && signals[2] == 0 ? 1 : 0;
     if (*fixed_flag) {
         // the fixed step: 1/60 in play at 60 fps, 1/30 in a scene at 30 (only values we know)
         const double from = static_cast<double>(scene ? 1.0f / 60.0f : 1.0f / 30.0f);
@@ -311,7 +314,7 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
         return;
     state.scene = scene;
     emuenv.display.vblank_start_count = scene ? 2 : 1;
-    LOG_INFO("frame_rate: {}", scene ? "a scripted scene: 30 fps" : "60 fps");
+    LOG_INFO("frame_rate: {}", scene ? "an event scene after a load: 30 fps" : "60 fps");
 }
 
 } // namespace
