@@ -231,42 +231,31 @@ std::optional<std::pair<float, float>> caution_eye(EmuEnvState &emuenv) {
 // mid-mission story scenes ran twice as fast at 60 with the step made 1/60 (owner, 2026-10-14).
 // So scripted scenes run at 30 fps as on the Vita, with the 1/30 step: the run loop waits for one
 // vblank per frame (sceDisplayWaitVblankStartCB), which then waits for two
-// (DisplayState::vblank_start_count). A scene is playing while [0x815399f8] != 0 and the player
-// is frozen: the script controller's scene start (0x81102c70 -> 0x81104428) freezes the player
-// (bit 0x10 of [[player+0x8c]+0x24]) and records it there, and its end (0x8110291e -> 0x8110473c)
-// restores the player and clears it (0 in the hub and in play, 2 in a scene: memory dumps). A boss's
-// intro scene leads into the fight without that end, so the flag alone stayed set through the
-// fight (owner, 2026-10-14). The player is the object of the manager at [0x81469994] whose
-// [+0x18] is 1 (0x810d241c: [+0x810] objects at +0x10, 0x10 apart).
+// (DisplayState::vblank_start_count). A scene is playing while [0x815399f8] != 0 and the HUD is
+// hidden: the script controller's scene start (0x81102c70 -> 0x81104428) sets that flag when it
+// freezes the player, and its end (0x8110291e -> 0x8110473c) clears it (0 in the hub and in play,
+// 2 in a scene: memory dumps). A boss's intro scene leads into the fight without that end, and the
+// player stays "frozen" (bit 0x10 of [[player+0x8c]+0x24]) while the owner fights, so the flag
+// alone kept the fight at 30 (owner, 2026-10-14). The HUD is shown in play and hidden in scenes:
+// the byte at +0x1c of the HUD manager (*0x8146c308; each widget has one too), 1 shown, 0 hidden.
 struct FrameRate {
     enum class Boot { Waiting, Set, TooLate };
     Boot boot = Boot::Waiting;
     int scene = -1; // a scripted scene at 30 fps, as last set (-1: not yet)
-    int frozen = -1; // the player frozen, as last seen while the flag is set (for the log)
+    int hud = -2; // the HUD shown, as last seen while the flag is set (for the log)
     int switches = 0; // logged switches
 };
 
-// whether the player is frozen (by a scripted scene), or -1 when there is no player
-int player_frozen(EmuEnvState &emuenv) {
+// whether the HUD is shown (1) or hidden (0), or -1 when there is no HUD manager
+int hud_shown(EmuEnvState &emuenv) {
     auto &mem = emuenv.mem;
-    const auto read32 = [&](Address a, uint32_t &v) {
-        if (!a || !is_valid_addr(mem, a) || !is_valid_addr(mem, a + 3))
-            return false;
-        std::memcpy(&v, Ptr<uint8_t>(a).get(mem), 4);
-        return true;
-    };
-    uint32_t manager = 0, count = 0;
-    if (!read32(0x81469994, manager) || !read32(manager + 0x810, count) || count > 4096)
+    uint32_t hud = 0;
+    if (!is_valid_addr(mem, 0x8146c308) || !is_valid_addr(mem, 0x8146c308 + 3))
         return -1;
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t object = 0, kind = 0, body = 0, flags = 0;
-        if (!read32(manager + 0x10 + i * 0x10, object) || !object || !read32(object + 0x18, kind) || kind != 1)
-            continue;
-        if (!read32(object + 0x8c, body) || !read32(body + 0x24, flags))
-            return -1;
-        return (flags & 0x10) ? 1 : 0;
-    }
-    return -1;
+    std::memcpy(&hud, Ptr<uint8_t>(0x8146c308).get(mem), 4);
+    if (!hud || !is_valid_addr(mem, hud + 0x1c))
+        return -1;
+    return *Ptr<uint8_t>(hud + 0x1c).get(mem) ? 1 : 0;
 }
 
 void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
@@ -298,14 +287,13 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
         return;
     int scene = 0;
     if (*scene_flag) {
-        const int frozen = player_frozen(emuenv);
-        // no player: a scene of its own (the flag says the start froze one, so this is rare)
-        scene = frozen != 0 ? 1 : 0;
-        if (frozen != state.frozen && state.switches < 200)
-            LOG_INFO("frame_rate: scene flag {}, player {}", *scene_flag, frozen < 0 ? "not found" : frozen ? "frozen" : "free");
-        state.frozen = frozen;
+        const int hud = hud_shown(emuenv);
+        scene = hud != 1 ? 1 : 0;
+        if (hud != state.hud && state.switches < 200)
+            LOG_INFO("frame_rate: scene flag {}, HUD {}", *scene_flag, hud < 0 ? "not found" : hud ? "shown" : "hidden");
+        state.hud = hud;
     } else
-        state.frozen = -1;
+        state.hud = -2;
     if (*fixed_flag) {
         // the fixed step: 1/60 in play at 60 fps, 1/30 in a scene at 30 (only values we know)
         const double from = static_cast<double>(scene ? 1.0f / 60.0f : 1.0f / 30.0f);
