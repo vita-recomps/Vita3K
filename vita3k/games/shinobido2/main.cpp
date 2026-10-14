@@ -232,13 +232,17 @@ std::optional<std::pair<float, float>> caution_eye(EmuEnvState &emuenv) {
 // mid-mission story scenes ran twice as fast at 60 with the step made 1/60 (owner, 2026-10-14).
 // So scripted scenes run at 30 fps as on the Vita, with the 1/30 step: the run loop waits for one
 // vblank per frame (sceDisplayWaitVblankStartCB), which then waits for two
-// (DisplayState::vblank_start_count). A scene is playing while the script controller
-// (*0x8146ac74) holds an event scene at +0x10 (0x8112e4fc builds one; its constructor selects the
-// fixed step): non-zero in a mission's opening scene, 0 in play (memory dumps). Earlier signals
-// failed in the owner's tests (2026-10-14): the scene flag [0x815399f8] (set by the controller's
-// scene start, cleared by its end) and the player's freeze bit stayed set through a boss fight
-// after its intro; the HUD's shown byte (+0x1c of *0x8146c308) said "shown" through the second
-// boss's intro after a load. The log records all of them when one changes.
+// (DisplayState::vblank_start_count). Which state is a scene came from the owner's tests of the
+// last missions' boss fights (2026-10-14), with these signals logged:
+// - the script controller (*0x8146ac74) holds an event scene at +0x10 (0x8112e4fc builds one):
+//   0 in play, 1 in a scene, but also through a boss fight, which is part of its event;
+// - the scene flag [0x815399f8]: set when the controller's scene start freezes the player (2),
+//   cleared by its end; it stays set through a boss fight after its intro, and is 0 in the second
+//   boss's intro, which follows a load;
+// - the HUD's shown byte (+0x1c of *0x8146c308): 0 in most scenes, 1 in play and boss fights, but
+//   also 1 through the second boss's intro.
+// A scene: an event scene, and the HUD hidden or no scene flag. In play (no event scene), boss
+// fights (flag set, HUD shown) and everything else, 60 fps.
 struct FrameRate {
     enum class Boot { Waiting, Set, TooLate };
     Boot boot = Boot::Waiting;
@@ -293,7 +297,7 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
     if (signals != state.signals && state.logged++ < 400)
         LOG_INFO("frame_rate: event scene {}, controller state {}, scene flag {}, HUD shown {}", signals[0], signals[1], signals[2], signals[3]);
     state.signals = signals;
-    const int scene = signals[0] == 1 ? 1 : 0;
+    const int scene = signals[0] == 1 && (signals[3] == 0 || signals[2] == 0) ? 1 : 0;
     if (*fixed_flag) {
         // the fixed step: 1/60 in play at 60 fps, 1/30 in a scene at 30 (only values we know)
         const double from = static_cast<double>(scene ? 1.0f / 60.0f : 1.0f / 30.0f);
