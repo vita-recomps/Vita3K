@@ -516,10 +516,26 @@ int run(Profile &profile, int argc, char *argv[]) {
         // screenshots the test driver asked for through the input pipe
         std::vector<std::string> shots;
         std::vector<std::pair<int, std::string>> records;
+        std::vector<std::tuple<std::string, uint32_t, uint32_t>> memdumps;
         {
             const std::lock_guard<std::mutex> lock(emuenv.ctrl.mutex);
             shots.swap(emuenv.ctrl.injected_screenshots);
             records.swap(emuenv.ctrl.injected_records);
+            memdumps.swap(emuenv.ctrl.injected_memdumps);
+        }
+        for (const auto &[path, address, size] : memdumps) {
+            // guest memory for research (tools/v3kdrive.py memdump:); pages that are not mapped read as 0
+            std::vector<uint8_t> bytes(size);
+            for (uint32_t i = 0; i < size;) {
+                // up to the end of this 4 KB page
+                const uint32_t n = std::min<uint32_t>(0x1000 - ((address + i) & 0xfff), size - i);
+                if (is_valid_addr(emuenv.mem, address + i))
+                    std::memcpy(&bytes[i], Ptr<uint8_t>(address + i).get(emuenv.mem), n);
+                i += n;
+            }
+            fs::ofstream out(fs_utils::utf8_to_path(path), std::ios::binary);
+            out.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            LOG_INFO("memdump: {:#x}+{:#x} -> {}", address, size, path);
         }
         for (const auto &path : shots)
             save_frame(emuenv, fs_utils::utf8_to_path(path));

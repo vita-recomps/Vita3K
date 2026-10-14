@@ -29,6 +29,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 typedef std::shared_ptr<SDL_Gamepad> GamepadPtr;
@@ -82,6 +83,8 @@ struct CtrlState {
     VirtualKeyboardState injected_state;
     // PNG paths the test driver asked to save the current frame to (the frontend takes them)
     std::vector<std::string> injected_screenshots;
+    // (path, guest address, size) dumps of guest memory the test driver asked for (the frontend writes them)
+    std::vector<std::tuple<std::string, uint32_t, uint32_t>> injected_memdumps;
     // (frame count, folder) recordings the test driver asked for
     std::vector<std::pair<int, std::string>> injected_records;
     // front-touch fingers the test driver holds, in 960x544 screen points (the frontend applies them)
