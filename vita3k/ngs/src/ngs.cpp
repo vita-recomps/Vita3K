@@ -377,6 +377,7 @@ bool init_system(State &ngs, const MemState &mem, SceNgsSystemInitParams *parame
     sys->max_voices = parameters->max_voices;
     sys->granularity = parameters->granularity;
     sys->sample_rate = parameters->sample_rate;
+    sys->reverb = ngs.effects.reverb;
 
     // Alloc first block for System struct
     if (!sys->alloc_raw(sizeof(System))) {

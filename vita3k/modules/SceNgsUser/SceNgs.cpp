@@ -19,10 +19,14 @@
 
 #include "../SceProcessmgr/SceProcessmgr.h"
 
+#include <ngs/modules/envelope.h>
+#include <ngs/modules/reverb.h>
 #include <ngs/state.h>
 #include <ngs/system.h>
 #include <util/log.h>
 #include <util/tracy.h>
+
+#include <cstring>
 
 TRACY_MODULE_NAME(SceNgs);
 
@@ -205,11 +209,30 @@ EXPORT(int, sceNgsAT9GetSectionDetails, uint32_t samples_start, const uint32_t n
 
 EXPORT(int, sceNgsModuleGetNumPresets, ngs::System *system, const SceUInt32 module, SceUInt32 *num_presets) {
     TRACY_FUNC(sceNgsModuleGetNumPresets, system, module, num_presets);
+    // the reverb's presets (ngs/src/modules/reverb.cpp); other modules' presets are not known
+    if (module == 0x5CE7 && emuenv.ngs.effects.reverb) {
+        if (!num_presets)
+            return RET_ERROR(SCE_NGS_ERROR_INVALID_ARG);
+        *num_presets = ngs::reverb_preset_count();
+        return SCE_NGS_OK;
+    }
     return UNIMPLEMENTED();
 }
 
-EXPORT(int, sceNgsModuleGetPreset, ngs::System *system, const SceUInt32 module, const SceUInt32 preset_index, void *params_buffer) {
+EXPORT(int, sceNgsModuleGetPreset, ngs::System *system, const SceUInt32 module, const SceUInt32 preset_index, SceNgsBufferInfo *params_buffer) {
     TRACY_FUNC(sceNgsModuleGetPreset, system, module, preset_index, params_buffer);
+    // params_buffer describes a module's locked parameters, as sceNgsVoiceLockParams returns them
+    // (Shinobido 2, 0x8122c17c: its reverb buss, preset 0)
+    if (module == 0x5CE7 && emuenv.ngs.effects.reverb) {
+        if (!params_buffer || !params_buffer->data || params_buffer->size < sizeof(SceNgsReverbParams))
+            return RET_ERROR(SCE_NGS_ERROR_INVALID_ARG);
+        SceNgsReverbParams preset;
+        if (!ngs::get_reverb_preset(preset_index, preset))
+            return RET_ERROR(SCE_NGS_ERROR_INVALID_ARG);
+        std::memcpy(params_buffer->data.get(emuenv.mem), &preset, sizeof(preset));
+        LOG_INFO("sceNgsModuleGetPreset: reverb preset {}", preset_index);
+        return SCE_NGS_OK;
+    }
     return UNIMPLEMENTED();
 }
 
@@ -851,6 +874,20 @@ EXPORT(SceInt32, sceNgsVoiceKeyOff, ngs::Voice *voice) {
 
     if (!voice) {
         return RET_ERROR(SCE_NGS_ERROR_INVALID_ARG);
+    }
+
+    // with a release time in its envelope, a playing voice goes on (finalizing) while the envelope
+    // fades it out; the envelope then ends it through the scheduler (finished callback, available).
+    // is_keyed_off stays clear meanwhile: the player and ATRAC9 modules rewind on a state change
+    // while it is set. Only for games that turn the release on (ngs::State::Effects).
+    if (emuenv.ngs.effects.release) {
+        ngs::VoiceScheduler &scheduler = voice->rack->system->voice_scheduler;
+        const std::lock_guard<std::recursive_mutex> guard(scheduler.mutex);
+        if (voice->state == ngs::VOICE_STATE_ACTIVE && !voice->is_paused && ngs::voice_release_msecs(emuenv.mem, *voice) > 0) {
+            const std::lock_guard<std::mutex> voice_guard(*voice->voice_mutex);
+            scheduler.off(emuenv.mem, voice);
+            return SCE_NGS_OK;
+        }
     }
 
     voice->is_keyed_off = true;

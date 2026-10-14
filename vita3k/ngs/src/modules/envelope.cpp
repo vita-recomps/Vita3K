@@ -55,21 +55,61 @@ float envelope_height(const SceNgsEnvelopeParams &p, float ms, int32_t &point) {
     return p.envelopePoints[i].fAmplitude;
 }
 
+// the envelope's parameters, when they are set and the module is in use
+const SceNgsEnvelopeParams *active_params(const MemState &mem, ModuleData &data) {
+    if (data.is_bypassed || !data.info.data)
+        return nullptr;
+    const SceNgsEnvelopeParams *const params = data.get_parameters<SceNgsEnvelopeParams>(mem);
+    if (!params || params->desc.id != SCE_NGS_ENVELOPE_PARAMS_STRUCT_ID)
+        return nullptr;
+    return params;
+}
+
 } // namespace
+
+uint32_t voice_release_msecs(const MemState &mem, Voice &voice) {
+    for (size_t i = 0; i < voice.rack->modules.size() && i < voice.datas.size(); i++) {
+        if (!voice.rack->modules[i] || voice.rack->modules[i]->module_id() != 0x5CE3)
+            continue;
+        const SceNgsEnvelopeParams *const params = active_params(mem, voice.datas[i]);
+        return params ? params->uReleaseMsecs : 0;
+    }
+    return 0;
+}
 
 void EnvelopeModule::on_state_change(const MemState &mem, ModuleData &data, const VoiceState previous) {
     if (data.guest_state_data.size() < sizeof(SceNgsEnvelopeStates))
         return;
     SceNgsEnvelopeStates *const state = data.get_state<SceNgsEnvelopeStates>();
+    EnvelopeLogicalState *const logical = data.get_logical_state<EnvelopeLogicalState>();
     switch (data.parent->state) {
     case VOICE_STATE_ACTIVE:
         // key-on: the envelope starts again
         *state = {};
         state->fReleaseScale = 1.0f;
+        *logical = {};
         break;
-    case VOICE_STATE_FINALIZING:
+    case VOICE_STATE_FINALIZING: {
+        // sceNgsVoiceKeyOff of a playing voice (the scheduler's own end of a voice sets is_keyed_off
+        // first): with a release time, the voice goes on and process() fades it out
+        const SceNgsEnvelopeParams *const params = active_params(mem, data);
+        if (previous == VOICE_STATE_ACTIVE && !data.parent->is_keyed_off && params && params->uReleaseMsecs > 0) {
+            logical->releasing = true;
+            logical->release_ms = static_cast<float>(params->uReleaseMsecs);
+            logical->elapsed_ms = 0.0f;
+            logical->start_height = state->fCurrentHeight;
+            state->nReleasing = 1;
+            break;
+        }
+        // otherwise the voice ends at once, so the release has finished: games wait for
+        // nReleasing == 1 and a zero height before they reuse a voice they keyed off
+        logical->releasing = false;
+        state->fCurrentHeight = 0.0f;
+        state->nReleasing = 1;
+        break;
+    }
     case VOICE_STATE_AVAILABLE:
-        // key-off or end of data: Vita3K ends the voice at once, so the release has finished
+        logical->releasing = false;
         state->fCurrentHeight = 0.0f;
         state->nReleasing = 1;
         break;
@@ -85,6 +125,33 @@ bool EnvelopeModule::process(KernelState &kern, const MemState &mem, const SceUI
     const int32_t granularity = data.parent->rack->system->granularity;
     const int32_t sample_rate = data.parent->rack->system->sample_rate;
     const float step_ms = sample_rate > 0 ? 1000.0f * static_cast<float>(granularity) / static_cast<float>(sample_rate) : 0.0f;
+
+    float *const pcm = reinterpret_cast<float *>(data.parent->products[0].data);
+    EnvelopeLogicalState *const logical = data.get_logical_state<EnvelopeLogicalState>();
+    if (logical->releasing) {
+        // the release: linear from the height at key-off to 0 over uReleaseMsecs (**hypothesis**:
+        // the hardware's release shape is not known), then the voice ends with height 0
+        const float r0 = logical->release_ms > 0 ? std::max(0.0f, 1.0f - logical->elapsed_ms / logical->release_ms) : 0.0f;
+        const float r1 = logical->release_ms > 0 ? std::max(0.0f, 1.0f - (logical->elapsed_ms + step_ms) / logical->release_ms) : 0.0f;
+        const float h0 = logical->start_height * r0, h1 = logical->start_height * r1;
+        if (pcm && granularity > 0) {
+            for (int32_t i = 0; i < granularity; i++) {
+                const float g = h0 + (h1 - h0) * (static_cast<float>(i) / static_cast<float>(granularity));
+                pcm[2 * i] *= g;
+                pcm[2 * i + 1] *= g;
+            }
+        }
+        logical->elapsed_ms += step_ms;
+        state->fPosition += step_ms;
+        state->fCurrentHeight = h1;
+        state->nReleasing = 1;
+        if (h1 > 0.0f)
+            return false;
+        // done: the scheduler ends the voice (finished callback, then available)
+        logical->releasing = false;
+        state->fCurrentHeight = 0.0f;
+        return true;
+    }
 
     if (data.is_bypassed) {
         state->fCurrentHeight = 1.0f;
@@ -102,7 +169,6 @@ bool EnvelopeModule::process(KernelState &kern, const MemState &mem, const SceUI
     int32_t point = 0;
     const float h0 = envelope_height(*params, state->fPosition, point);
     const float h1 = envelope_height(*params, state->fPosition + step_ms, point);
-    float *const pcm = reinterpret_cast<float *>(data.parent->products[0].data);
     if (pcm && granularity > 0) {
         for (int32_t i = 0; i < granularity; i++) {
             const float g = h0 + (h1 - h0) * (static_cast<float>(i) / static_cast<float>(granularity));

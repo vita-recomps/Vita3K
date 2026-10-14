@@ -53,6 +53,19 @@ struct SceNgsEnvelopeStates {
 
 namespace ngs {
 
+// the release after a key-off with uReleaseMsecs > 0: the voice keeps playing while the height falls
+// from where it was to 0, then the envelope ends the voice
+struct EnvelopeLogicalState : public ModuleLogicalState {
+    bool releasing = false;
+    float release_ms = 0.0f;
+    float elapsed_ms = 0.0f;
+    float start_height = 0.0f;
+};
+
+// the release time a key-off of this voice would get from its envelope (0: none, or no envelope,
+// or the envelope is bypassed)
+uint32_t voice_release_msecs(const MemState &mem, Voice &voice);
+
 struct EnvelopeModule : public Module {
 public:
     bool process(KernelState &kern, const MemState &mem, const SceUID thread_id, ModuleData &data, std::unique_lock<std::recursive_mutex> &scheduler_lock, std::unique_lock<std::mutex> &voice_lock) override;
@@ -67,6 +80,7 @@ public:
     // the guest reads SceNgsEnvelopeStates through sceNgsVoiceGetStateData: games wait for
     // nReleasing == 1 and a zero height before reusing a voice they keyed off
     uint32_t get_guest_state_size() const override { return sizeof(SceNgsEnvelopeStates); }
+    std::unique_ptr<ModuleLogicalState> create_logical_state() const override { return std::make_unique<EnvelopeLogicalState>(); }
     void on_state_change(const MemState &mem, ModuleData &data, const VoiceState previous) override;
 };
 

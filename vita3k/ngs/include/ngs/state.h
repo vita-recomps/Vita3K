@@ -30,6 +30,12 @@ struct System;
 struct State {
     Ptr<VoiceDefinition> definitions;
     std::vector<System *> systems;
+    // effects Vita3K long left out, which change a game's sound: on per game (its single-game front
+    // end), off by default, so other games sound as before
+    struct Effects {
+        bool reverb = false; // the reverb buss and its presets (sceNgsModuleGetPreset)
+        bool release = false; // sceNgsVoiceKeyOff fades a voice out over its envelope's release time
+    } effects;
 };
 
 bool init(State &ngs, MemState &mem);
