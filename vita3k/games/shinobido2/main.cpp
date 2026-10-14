@@ -21,12 +21,16 @@
 #include "../../game-frontend/profile.h"
 
 #include <emuenv/state.h>
+#include <mem/functions.h>
+#include <mem/ptr.h>
+#include <ngs/state.h>
 #include <renderer/state.h>
 #include <util/log.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iterator>
 #include <chrono>
 #include <mutex>
@@ -39,8 +43,20 @@
 namespace {
 
 namespace layout = game_frontend::layout;
+using Kind = game_frontend::SettingSpec::Kind;
 
 constexpr const char *TITLE_ID = "PCSE00015";
+
+// [audio]: the shared volume, and the sound effects Vita3K long left out (ngs::State::Effects),
+// on for this game: its reverb buss (filled from the reverb's preset 0) and the fade-outs its
+// sound manager asks for when it stops a sound
+game_frontend::IniSection audio_layout() {
+    game_frontend::IniSection section = layout::audio();
+    section.settings.push_back({ "effects", Kind::Bool, "true", 0, 0, {},
+        "Reverb and fade-outs as the game asks for them (false: the dry sound of earlier builds,\n"
+        "for comparison). Read when the game starts." });
+    return section;
+}
 
 game_frontend::IniLayout ini_layout() {
     const std::string id = "shinobido2", exe = "shinobido2.exe";
@@ -48,8 +64,13 @@ game_frontend::IniLayout ini_layout() {
         "shinobido2 settings. Lines starting with ; are comments; delete the ; to use a line.",
         {
             layout::paths(TITLE_ID, id, exe),
-            { "display", "", { layout::scale(), layout::window_scale(), layout::fullscreen(id, exe), layout::vsync(), layout::filter() } },
-            layout::audio(),
+            { "display", "",
+                { layout::scale(), layout::window_scale(), layout::fullscreen(id, exe), layout::vsync(),
+                    { "frame_rate", Kind::Choice, "30", 0, 0, { "30", "60" },
+                        "The game's frame rate: 30 as on the Vita, or 60 (experimental: menus and HUD\n"
+                        "animate twice as fast). Read when the game starts." },
+                    layout::filter() } },
+            audio_layout(),
             layout::recompiled(id),
             layout::debug(id),
             layout::keyboard(),
@@ -194,6 +215,61 @@ std::optional<std::pair<float, float>> caution_eye(EmuEnvState &emuenv) {
     return state.point;
 }
 
+// The frame rate (docs/03-plan.md, 60 fps). main (0x81000016) creates the application (its
+// pointer at 0x8146c2b0) and sets its frame rate [app+8] to 30; the run loop (0x8114d024) reads
+// it once, on entry, for both the frame period and the minimum vblanks between frames, and keeps
+// them in registers. So 60 is written before the run loop starts, while the game initialises
+// (init takes far longer than a front-end tick: GXM setup and the first loads); the loop stores
+// the vcount at [app+0x1d8] on entry, which the constructor zeroed, so a non-zero value there
+// means it is too late and the rate is left at 30.
+// The game's time module (0x81054b6e, every frame) measures the frame time (an average over 8
+// frames, at most [0x81468998]) and stores the step every update uses at 0x81468978, unless it is
+// in fixed-step mode ([0x81538370] != 0), where the step is [0x81468998] itself. Application
+// init and some scene changes select fixed steps of 1/30 s (0x81054ee8 with 0x3d088889), so in
+// fixed mode a step of exactly (float) 1/30 becomes (float) 1/60, every tick; the measured mode
+// needs nothing.
+struct FrameRate {
+    enum class Boot { Waiting, Set, TooLate };
+    Boot boot = Boot::Waiting;
+    int fixed_steps = 0; // fixed 1/30 steps changed to 1/60
+};
+
+void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
+    auto &mem = emuenv.mem;
+    const auto ptr = [&](Address a, uint32_t size) -> uint8_t * { return is_valid_addr(mem, a) && is_valid_addr(mem, a + size - 1) ? Ptr<uint8_t>(a).get(mem) : nullptr; };
+    const auto read32 = [](const uint8_t *p) { uint32_t v; std::memcpy(&v, p, 4); return v; };
+    if (state.boot == FrameRate::Boot::Waiting) {
+        const uint8_t *const holder = ptr(0x8146c2b0, 4);
+        const uint32_t app_addr = holder ? read32(holder) : 0;
+        uint8_t *const app = app_addr ? ptr(app_addr, 0x1e0) : nullptr;
+        if (!app || read32(app + 8) != 30)
+            return;
+        if (read32(app + 0x1d8) != 0) {
+            state.boot = FrameRate::Boot::TooLate;
+            LOG_WARN("frame_rate: the game's run loop had already started; it stays at 30 fps");
+            return;
+        }
+        const uint32_t sixty = 60;
+        std::memcpy(app + 8, &sixty, 4);
+        state.boot = FrameRate::Boot::Set;
+        LOG_INFO("frame_rate: 60 fps (application at {:#x})", app_addr);
+    }
+    if (state.boot != FrameRate::Boot::Set)
+        return;
+    const uint8_t *const fixed = ptr(0x81538370, 1);
+    uint8_t *const step = ptr(0x81468998, 8);
+    if (!fixed || !step || !*fixed)
+        return;
+    double value;
+    std::memcpy(&value, step, 8);
+    if (value != static_cast<double>(1.0f / 30.0f))
+        return;
+    value = static_cast<double>(1.0f / 60.0f);
+    std::memcpy(step, &value, 8);
+    if (state.fixed_steps++ < 20)
+        LOG_INFO("frame_rate: fixed step 1/30 s -> 1/60 s");
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -204,5 +280,16 @@ int main(int argc, char *argv[]) {
     profile.ini = ini_layout();
     profile.default_touches = { { "caution", 896, 260, "F", "righttrigger" } };
     profile.touch_targets["caution"] = caution_eye;
+    profile.hooks.before_run = [](game_frontend::Context &ctx) {
+        const bool effects = ctx.settings->values.get_bool("audio.effects");
+        ctx.emuenv->ngs.effects.reverb = effects;
+        ctx.emuenv->ngs.effects.release = effects;
+        LOG_INFO("audio effects (reverb, fade-outs): {}", effects ? "on" : "off");
+    };
+    FrameRate frame_rate;
+    profile.hooks.on_tick = [&](game_frontend::Context &ctx) {
+        if (ctx.settings->values.get_int("display.frame_rate") == 60)
+            update_frame_rate(*ctx.emuenv, frame_rate);
+    };
     return game_frontend::run(profile, argc, argv);
 }

@@ -475,7 +475,7 @@ if(WIN32)
 		game-frontend/frontend.cpp game-frontend/profile.h game-frontend/settings.cpp game-frontend/settings.h
 		game-frontend/input.cpp game-frontend/input.h
 		interface.cpp interface.h performance.cpp)
-	target_link_libraries(game-frontend PUBLIC app audio compat config ctrl dialog display ime lang gdbstub gxm io miniz modules motion packages patch renderer sdl-frontend shader touch util psvpfsparser pugixml::pugixml SDL3::SDL3 Version)
+	target_link_libraries(game-frontend PUBLIC app audio compat config ctrl dialog display ime lang gdbstub gxm io miniz modules motion ngs packages patch renderer sdl-frontend shader touch util psvpfsparser pugixml::pugixml SDL3::SDL3 Version)
 	if(USE_DISCORD_RICH_PRESENCE)
 		target_link_libraries(game-frontend PUBLIC discord-rpc)
 	endif()
