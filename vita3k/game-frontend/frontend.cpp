@@ -499,7 +499,15 @@ int run(Profile &profile, int argc, char *argv[]) {
         }
     };
     const auto session_start = std::chrono::steady_clock::now();
+    bool mipmaps_set = false;
     hooks.on_tick = [&] {
+        // [display] mipmaps (layout::mipmaps; false in a game without it): the renderer exists from
+        // the first ticks, before the game creates its textures
+        if (!mipmaps_set && emuenv.renderer) {
+            mipmaps_set = true;
+            emuenv.renderer->generate_mips = settings.values.get_bool("display.mipmaps");
+            LOG_INFO("generated mipmaps: {}", emuenv.renderer->generate_mips ? "on" : "off");
+        }
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
             // --dump-elfs: the modules the game loaded so far are written; then quit
             if (profile.hooks.before_dump_quit)

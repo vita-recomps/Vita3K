@@ -75,10 +75,7 @@ game_frontend::IniLayout ini_layout() {
                         "the scenes after a loading screen stay at 30; the pause menu and HUD animate twice as\n"
                         "fast). Read when the game starts." },
                     layout::filter(),
-                    { "mipmaps", Kind::Bool, "false", 0, 0, {},
-                        "Smooth textures that shimmer in motion (the ground, walls): build mip levels for the\n"
-                        "repeating textures the game ships without them. Changes the look a little. Read when\n"
-                        "the game starts." } } },
+                    layout::mipmaps(true) } },
             audio_layout(),
             layout::recompiled(id),
             layout::debug(id),
@@ -389,14 +386,7 @@ int main(int argc, char *argv[]) {
         LOG_INFO("audio effects (reverb, fade-outs): {}", effects ? "on" : "off");
     };
     FrameRate frame_rate;
-    bool mipmaps_set = false;
     profile.hooks.on_tick = [&](game_frontend::Context &ctx) {
-        // the renderer exists from the first ticks, before the game creates its textures
-        if (!mipmaps_set && ctx.emuenv->renderer) {
-            mipmaps_set = true;
-            ctx.emuenv->renderer->generate_mips = ctx.settings->values.get_bool("display.mipmaps");
-            LOG_INFO("generated mipmaps: {}", ctx.emuenv->renderer->generate_mips ? "on" : "off");
-        }
         if (ctx.settings->values.get_int("display.frame_rate") == 60)
             update_frame_rate(*ctx.emuenv, frame_rate);
     };

@@ -70,6 +70,9 @@ game_frontend::IniLayout ini_layout() {
                 "The game's frame rate: 60, or 30 as on the Vita. The game keeps its speed at 60; loading\n"
                 "screens still run at 30 (they don't finish at 60)." },
             layout::filter(),
+            // off: no visible change on the shimmering ST17 ground (the owner, 2026-10-14), so its cause
+            // there is something else (**hypothesis**: explicit-LOD sampling or geometry)
+            layout::mipmaps(false),
         } };
     IniSection game{ "game", "",
         { { "dlc", Kind::Bool, "true", 0, 0, {},

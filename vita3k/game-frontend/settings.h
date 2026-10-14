@@ -133,6 +133,8 @@ SettingSpec window_scale();
 SettingSpec fullscreen(const std::string &id, const std::string &exe);
 SettingSpec vsync();
 SettingSpec filter();
+// [display] mipmaps: renderer::State::generate_mips, which the front end sets once the renderer exists
+SettingSpec mipmaps(bool on_by_default);
 IniSection audio();
 IniSection recompiled(const std::string &id);
 IniSection debug(const std::string &id);

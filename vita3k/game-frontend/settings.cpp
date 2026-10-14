@@ -319,6 +319,12 @@ SettingSpec filter() {
         "How the picture is scaled to the window: Bilinear, Nearest, Bicubic, FXAA, FSR." };
 }
 
+SettingSpec mipmaps(bool on_by_default) {
+    return { "mipmaps", Kind::Bool, on_by_default ? "true" : "false", 0, 0, {},
+        "Smooth textures that shimmer in motion (the ground, walls): build mip levels for the repeating\n"
+        "textures the game ships without them (false: as on the Vita). Read when the game starts." };
+}
+
 IniSection audio() {
     return { "audio", "", { { "volume", Kind::Int, "100", 0, 100, {}, "0-100." } } };
 }
