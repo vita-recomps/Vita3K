@@ -74,11 +74,19 @@ game_frontend::IniLayout ini_layout() {
             // there is something else (**hypothesis**: explicit-LOD sampling or geometry)
             layout::mipmaps(false),
         } };
+    // the settings menu changes the frame rate while the game runs: on_tick reads it every tick
+    for (auto &spec : display.settings) {
+        if (spec.key == "frame_rate")
+            spec.live = true;
+        if (spec.key == "full_3d")
+            spec.title = "Full-resolution 3D";
+    }
     IniSection game{ "game", "",
         { { "dlc", Kind::Bool, "true", 0, 0, {},
             "Unlock the add-ons (raiments, hoods, additional and otherworldly pacts). Their content is in the\n"
             "game's own data since update 1.30; PSN, which recorded the purchases, is closed. The save's\n"
             "system.bin is changed once (a copy goes to ss-delta/save-backups/)." } } };
+    game.settings[0].title = "Add-ons (DLC)";
     IniSection multiplayer{ "multiplayer", "",
         {
             { "network", Kind::Choice, "local", 0, 0, { "local", "lan" },

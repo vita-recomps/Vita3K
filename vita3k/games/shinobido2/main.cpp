@@ -59,6 +59,7 @@ game_frontend::IniSection audio_layout() {
     section.settings.push_back({ "effects", Kind::Bool, "true", 0, 0, {},
         "Reverb and fade-outs as the game asks for them (false: the dry sound of earlier builds,\n"
         "for comparison). Read when the game starts." });
+    section.settings.back().title = "Sound effects (reverb, fades)";
     return section;
 }
 

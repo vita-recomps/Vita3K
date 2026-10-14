@@ -164,6 +164,8 @@ struct State {
     std::chrono::steady_clock::time_point m_shaders_compiled_time{};
 
     std::atomic<bool> paused{ false };
+    // a front end's own overlay covers the paused game (its settings menu): no "Paused" card
+    std::atomic<bool> hide_pause_overlay{ false };
 
     // Non-owning pointer to dialog state for native common dialog overlays.
     DialogState *common_dialog = nullptr;

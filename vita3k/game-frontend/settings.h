@@ -46,6 +46,10 @@ struct SettingSpec {
     std::vector<std::string> choices;
     std::string help; // comment lines above the key in the default file, without "; "
     bool commented = false; // in the default file as ";key = value" (an example, not set)
+    // the settings menu changes it while the game runs (frontend.cpp applies the shared ones, a game's
+    // hooks read its own each tick); otherwise a change takes effect at the next start
+    bool live = false;
+    std::string title; // the settings menu's name for it; empty: from the key ("window_scale" -> "Window scale")
 };
 
 struct IniSection {
@@ -119,6 +123,16 @@ struct Settings {
 
 // the default file's text
 std::string default_ini(const IniLayout &layout);
+
+// the file the settings menu writes: <dir>/<id>.ini, or <dir>/<id>-player<N>.ini for player N >= 2
+// (whose lines win over the first)
+fs::path settings_file(const fs::path &dir, const std::string &id, int player);
+
+// Sets `key` in [section] of the settings file, keeping everything else as it is: a "key = ..."
+// line in that section is replaced (a commented ";key = ..." one when there is no other), or the
+// line is added under the section's header; a missing section is added at the end. Returns false
+// with the reason in `error`.
+bool save_setting(const fs::path &file, const std::string &section, const std::string &key, const std::string &value, std::string &error);
 
 // reads <dir>/<id>.ini (written from the layout when missing), and for player N >= 2 also
 // <dir>/<id>-player<N>.ini, whose lines win

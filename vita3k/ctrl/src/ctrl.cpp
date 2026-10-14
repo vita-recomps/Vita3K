@@ -151,6 +151,7 @@ void refresh_controllers(CtrlState &state, EmuEnvState &emuenv) {
 //   screenshot <path>             the frontend saves the current frame there, at render resolution
 //   record <count> <dir>          the frontend saves the next <count> rendered frames into <dir>
 //   memdump <address> <size> <path>  the frontend writes guest memory there (address, size in hex)
+//   menu                          the frontend opens or closes its settings menu
 // Buttons: cross circle square triangle up down left right l r l2 r2 l3 r3 start select.
 // Nothing goes through the window, so automated runs never need keyboard focus.
 static uint32_t parse_injected_button(const std::string &name) {
@@ -214,6 +215,9 @@ static void apply_injected_command(CtrlState &state, const std::string &line) {
         std::getline(words >> std::ws, path);
         std::lock_guard<std::mutex> guard(state.mutex);
         state.injected_memdumps.emplace_back(path, address, size);
+    } else if (command == "menu") {
+        std::lock_guard<std::mutex> guard(state.mutex);
+        state.injected_menu_toggle = true;
     } else if (command == "screenshot") {
         std::string path;
         std::getline(words >> std::ws, path);

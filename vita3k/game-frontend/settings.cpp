@@ -145,6 +145,87 @@ std::string default_ini(const IniLayout &layout) {
     return out;
 }
 
+fs::path settings_file(const fs::path &dir, const std::string &id, int player) {
+    return player >= 2 ? dir / fmt::format("{}-player{}.ini", id, player) : dir / (id + ".ini");
+}
+
+bool save_setting(const fs::path &file, const std::string &section, const std::string &key, const std::string &value, std::string &error) {
+    // read and written as bytes, so the file keeps its line endings (CRLF or LF)
+    std::vector<std::string> lines;
+    bool crlf = false;
+    {
+        fs::ifstream in(file, std::ios::binary);
+        for (std::string line; std::getline(in, line);) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+                crlf = true;
+            }
+            lines.push_back(line);
+        }
+    }
+    const auto lower = [](std::string s) { return string_utils::tolower(s); };
+    // the key of a "key = value" or ";key = value" line, lower case, and whether it is commented
+    const auto key_of = [&](const std::string &line, bool &commented) -> std::string {
+        std::string t = trim(line);
+        commented = t.starts_with(";");
+        if (commented)
+            t = trim(t.substr(1));
+        const auto eq = t.find('=');
+        return eq == std::string::npos ? std::string() : lower(trim(t.substr(0, eq)));
+    };
+    const std::string wanted_section = lower(section), wanted_key = lower(key);
+    std::string current;
+    std::optional<size_t> header, set_line, commented_line;
+    for (size_t i = 0; i < lines.size(); i++) {
+        const std::string t = trim(lines[i]);
+        if (t.starts_with("[") && t.ends_with("]")) {
+            current = lower(trim(t.substr(1, t.size() - 2)));
+            if (current == wanted_section && !header)
+                header = i;
+            continue;
+        }
+        if (current != wanted_section)
+            continue;
+        bool commented = false;
+        if (key_of(lines[i], commented) == wanted_key) {
+            if (!commented && !set_line)
+                set_line = i;
+            else if (commented && !commented_line)
+                commented_line = i;
+        }
+    }
+    const std::string new_line = key + " = " + value;
+    if (set_line)
+        lines[*set_line] = new_line;
+    else if (commented_line)
+        lines[*commented_line] = new_line;
+    else if (header)
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(*header + 1), new_line);
+    else {
+        lines.push_back("");
+        lines.push_back("[" + section + "]");
+        lines.push_back(new_line);
+    }
+    // written to a new file first, which then replaces the old one
+    const fs::path tmp = fs::path(file).concat(".new");
+    {
+        fs::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        for (const auto &line : lines)
+            out << line << (crlf ? "\r\n" : "\n");
+        if (!out) {
+            error = "cannot write " + fs_utils::path_to_utf8(tmp);
+            return false;
+        }
+    }
+    boost::system::error_code ec;
+    fs::rename(tmp, file, ec);
+    if (ec) {
+        error = fmt::format("cannot replace {}: {}", fs_utils::path_to_utf8(file), ec.message());
+        return false;
+    }
+    return true;
+}
+
 Settings load_settings(const fs::path &dir, const std::string &id, const IniLayout &layout,
     const std::vector<TouchBinding> &default_touches, int player) {
     Settings out;
@@ -296,37 +377,52 @@ IniSection paths(const std::string &title_id, const std::string &id, const std::
 }
 
 SettingSpec scale() {
-    return { "scale", Kind::Float, "1", 1, 8, {}, "Internal resolution as a multiple of the Vita's 960x544 (1-8, fractions allowed)." };
+    SettingSpec s{ "scale", Kind::Float, "1", 1, 8, {}, "Internal resolution as a multiple of the Vita's 960x544 (1-8, fractions allowed)." };
+    s.title = "Resolution";
+    return s;
 }
 
 SettingSpec window_scale() {
-    return { "window_scale", Kind::Int, "1", 1, 4, {}, "Window size as a multiple of 960x544 (1-4)." };
+    SettingSpec s{ "window_scale", Kind::Int, "1", 1, 4, {}, "Window size as a multiple of 960x544 (1-4)." };
+    s.live = true;
+    return s;
 }
 
 SettingSpec fullscreen(const std::string &id, const std::string &exe) {
-    return { "fullscreen", Kind::Bool, "false", 0, 0, {},
+    SettingSpec s{ "fullscreen", Kind::Bool, "false", 0, 0, {},
         fmt::format("Start in fullscreen. F11 or Alt+Enter switches while playing. F12 saves a screenshot to\n"
                     "{}/screenshots/ next to {}.",
             id, exe) };
+    s.live = true;
+    return s;
 }
 
 SettingSpec vsync() {
-    return { "vsync", Kind::Bool, "true" };
+    SettingSpec s{ "vsync", Kind::Bool, "true", 0, 0, {}, "Wait for the display's refresh (no tearing)." };
+    s.live = true;
+    s.title = "VSync";
+    return s;
 }
 
 SettingSpec filter() {
-    return { "filter", Kind::Choice, "Bilinear", 0, 0, { "Bilinear", "Nearest", "Bicubic", "FXAA", "FSR" },
+    SettingSpec s{ "filter", Kind::Choice, "Bilinear", 0, 0, { "Bilinear", "Nearest", "Bicubic", "FXAA", "FSR" },
         "How the picture is scaled to the window: Bilinear, Nearest, Bicubic, FXAA, FSR." };
+    s.live = true;
+    return s;
 }
 
 SettingSpec mipmaps(bool on_by_default) {
-    return { "mipmaps", Kind::Bool, on_by_default ? "true" : "false", 0, 0, {},
+    SettingSpec s{ "mipmaps", Kind::Bool, on_by_default ? "true" : "false", 0, 0, {},
         "Smooth textures that shimmer in motion (the ground, walls): build mip levels for the repeating\n"
         "textures the game ships without them (false: as on the Vita). Read when the game starts." };
+    s.title = "Smooth textures (mipmaps)";
+    return s;
 }
 
 IniSection audio() {
-    return { "audio", "", { { "volume", Kind::Int, "100", 0, 100, {}, "0-100." } } };
+    SettingSpec volume{ "volume", Kind::Int, "100", 0, 100, {}, "0-100." };
+    volume.live = true;
+    return { "audio", "", { volume } };
 }
 
 IniSection recompiled(const std::string &id) {

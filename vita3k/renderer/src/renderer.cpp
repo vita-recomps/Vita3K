@@ -63,7 +63,7 @@ void State::update_overlays() {
     {
         const bool is_paused = paused.load(std::memory_order_relaxed);
         overlay_manager->set_paused(is_paused);
-        if (is_paused) {
+        if (is_paused && !hide_pause_overlay.load(std::memory_order_relaxed)) {
             if (!overlay_manager->get<overlay::pause_overlay>())
                 overlay_manager->create<overlay::pause_overlay>();
         } else {

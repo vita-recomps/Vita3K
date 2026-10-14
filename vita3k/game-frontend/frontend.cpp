@@ -25,9 +25,12 @@
 #include "../archive.h"
 #include "input.h"
 #include "settings.h"
+#include "settings_menu.h"
 
 #include <app/functions.h>
 #include <app/session_controller.h>
+#include <audio/state.h>
+#include <overlay/display_manager.h>
 #include <config/state.h>
 #include <config/version.h>
 #include <ctrl/state.h>
@@ -418,6 +421,56 @@ int run(Profile &profile, int argc, char *argv[]) {
         for (const auto &line : touch_warnings)
             LOG_WARN("{}.ini: {}", profile.id, line);
     }
+    // The settings menu (settings_menu.h): F1, or Select held for a second on a gamepad, opens it
+    // over the paused game; F1, Esc or Circle closes it. Its changes are written to the settings file
+    // here, on the main thread, and the live ones applied.
+    app::AppSessionController *session_ptr = nullptr; // set once the session exists, below
+    std::shared_ptr<SettingsMenu> menu;
+    bool select_held = false, select_used = false;
+    std::chrono::steady_clock::time_point select_down{};
+    const auto apply_change = [&](const SettingsMenu::Change &change) {
+        std::string error;
+        if (!save_setting(settings_file(ctx.exe_dir, profile.id, ctx.player), change.section, change.key, change.value, error))
+            LOG_ERROR("Settings menu: {}", error);
+        settings.values.values[change.section + "." + change.key] = change.value;
+        LOG_INFO("Settings menu: [{}] {} = {}", change.section, change.key, change.value);
+        const std::string key = change.section + "." + change.key;
+        if (key == "display.fullscreen" && window)
+            SDL_SetWindowFullscreen(window, change.value == "true");
+        else if (key == "display.window_scale" && window && !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)) {
+            const int n = std::max(1, std::atoi(change.value.c_str()));
+            SDL_SetWindowSize(window, 960 * n, 544 * n);
+            SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        } else if (key == "display.vsync" && emuenv.renderer)
+            emuenv.renderer->set_vsync_state(change.value == "true");
+        else if (key == "display.filter" && emuenv.renderer)
+            emuenv.renderer->set_screen_filter(change.value);
+        else if (key == "audio.volume")
+            emuenv.audio.set_global_volume(std::clamp(std::atoi(change.value.c_str()), 0, 100) / 100.f);
+    };
+    const auto open_menu = [&] {
+        if (menu || !session_ptr || !emuenv.overlay_manager || !emuenv.renderer)
+            return;
+        menu = emuenv.overlay_manager->create<SettingsMenu>(profile.ini, settings.values, profile.name);
+        emuenv.renderer->hide_pause_overlay = true;
+        session_ptr->set_pause_reason(app::AppSessionPauseReason::Menu, true);
+        emuenv.overlay_manager->attach_thread_input("settings_menu", menu);
+        LOG_INFO("Settings menu: open");
+    };
+    const auto close_menu = [&] {
+        if (!menu)
+            return;
+        menu->request_close();
+        menu->stop_input_processing(true);
+        for (const auto &change : menu->take_changes())
+            apply_change(change);
+        emuenv.overlay_manager->remove<SettingsMenu>();
+        menu.reset();
+        session_ptr->set_pause_reason(app::AppSessionPauseReason::Menu, false);
+        emuenv.renderer->hide_pause_overlay = false;
+        LOG_INFO("Settings menu: closed");
+    };
+
     auto last_title = std::chrono::steady_clock::now();
     sdl_frontend::Hooks hooks;
     hooks.on_window = [&](SDL_Window *w) {
@@ -455,7 +508,14 @@ int run(Profile &profile, int argc, char *argv[]) {
         case SDL_EVENT_KEY_DOWN:
             if (event.key.repeat)
                 break;
-            if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)))
+            if (event.key.key == SDLK_F1) {
+                if (menu)
+                    close_menu();
+                else
+                    open_menu();
+            } else if (event.key.key == SDLK_ESCAPE && menu)
+                close_menu();
+            else if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)))
                 SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
             else if (event.key.key == SDLK_F12) {
                 const auto t = std::time(nullptr);
@@ -500,7 +560,46 @@ int run(Profile &profile, int argc, char *argv[]) {
     };
     const auto session_start = std::chrono::steady_clock::now();
     bool mipmaps_set = false;
+
     hooks.on_tick = [&] {
+        bool menu_toggle = false;
+        {
+            const std::lock_guard<std::mutex> lock(emuenv.ctrl.mutex);
+            std::swap(menu_toggle, emuenv.ctrl.injected_menu_toggle);
+        }
+        if (menu_toggle) {
+            if (menu)
+                close_menu();
+            else
+                open_menu();
+        }
+        if (menu) {
+            for (const auto &change : menu->take_changes())
+                apply_change(change);
+            if (menu->close_requested())
+                close_menu();
+        }
+        {
+            // Select (Back, View) held for a second on any gamepad: the menu, open or closed
+            bool select = false;
+            for (const auto &[_, controller] : emuenv.ctrl.controllers)
+                if (SDL_Gamepad *pad = controller.controller.get(); pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK))
+                    select = true;
+            const auto now = std::chrono::steady_clock::now();
+            if (!select)
+                select_held = false;
+            else if (!select_held) {
+                select_held = true;
+                select_used = false;
+                select_down = now;
+            } else if (!select_used && now - select_down >= std::chrono::seconds(1)) {
+                select_used = true;
+                if (menu)
+                    close_menu();
+                else
+                    open_menu();
+            }
+        }
         // [display] mipmaps (layout::mipmaps; false in a game without it): the renderer exists from
         // the first ticks, before the game creates its textures
         if (!mipmaps_set && emuenv.renderer) {
@@ -574,6 +673,7 @@ int run(Profile &profile, int argc, char *argv[]) {
     };
 
     app::AppSessionController session(emuenv);
+    session_ptr = &session;
     const int exit_code = sdl_frontend::run(emuenv, session, AppLaunchRequest{ .app_path = profile.title_id }, hooks);
 
 #ifdef _WIN32
