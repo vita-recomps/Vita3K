@@ -29,6 +29,7 @@
 #include <util/log.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -231,31 +232,28 @@ std::optional<std::pair<float, float>> caution_eye(EmuEnvState &emuenv) {
 // mid-mission story scenes ran twice as fast at 60 with the step made 1/60 (owner, 2026-10-14).
 // So scripted scenes run at 30 fps as on the Vita, with the 1/30 step: the run loop waits for one
 // vblank per frame (sceDisplayWaitVblankStartCB), which then waits for two
-// (DisplayState::vblank_start_count). A scene is playing while [0x815399f8] != 0 and the HUD is
-// hidden: the script controller's scene start (0x81102c70 -> 0x81104428) sets that flag when it
-// freezes the player, and its end (0x8110291e -> 0x8110473c) clears it (0 in the hub and in play,
-// 2 in a scene: memory dumps). A boss's intro scene leads into the fight without that end, and the
-// player stays "frozen" (bit 0x10 of [[player+0x8c]+0x24]) while the owner fights, so the flag
-// alone kept the fight at 30 (owner, 2026-10-14). The HUD is shown in play and hidden in scenes:
-// the byte at +0x1c of the HUD manager (*0x8146c308; each widget has one too), 1 shown, 0 hidden.
+// (DisplayState::vblank_start_count). A scene is playing while the script controller
+// (*0x8146ac74) holds an event scene at +0x10 (0x8112e4fc builds one; its constructor selects the
+// fixed step): non-zero in a mission's opening scene, 0 in play (memory dumps). Earlier signals
+// failed in the owner's tests (2026-10-14): the scene flag [0x815399f8] (set by the controller's
+// scene start, cleared by its end) and the player's freeze bit stayed set through a boss fight
+// after its intro; the HUD's shown byte (+0x1c of *0x8146c308) said "shown" through the second
+// boss's intro after a load. The log records all of them when one changes.
 struct FrameRate {
     enum class Boot { Waiting, Set, TooLate };
     Boot boot = Boot::Waiting;
     int scene = -1; // a scripted scene at 30 fps, as last set (-1: not yet)
-    int hud = -2; // the HUD shown, as last seen while the flag is set (for the log)
-    int switches = 0; // logged switches
+    std::array<int64_t, 4> signals{ -9, -9, -9, -9 }; // as last logged
+    int logged = 0; // logged signal changes
 };
 
-// whether the HUD is shown (1) or hidden (0), or -1 when there is no HUD manager
-int hud_shown(EmuEnvState &emuenv) {
-    auto &mem = emuenv.mem;
-    uint32_t hud = 0;
-    if (!is_valid_addr(mem, 0x8146c308) || !is_valid_addr(mem, 0x8146c308 + 3))
+// a byte or a word of guest memory, or -1 when the address is not mapped
+int64_t read_guest(EmuEnvState &emuenv, Address address, int size) {
+    if (!address || !is_valid_addr(emuenv.mem, address) || !is_valid_addr(emuenv.mem, address + size - 1))
         return -1;
-    std::memcpy(&hud, Ptr<uint8_t>(0x8146c308).get(mem), 4);
-    if (!hud || !is_valid_addr(mem, hud + 0x1c))
-        return -1;
-    return *Ptr<uint8_t>(hud + 0x1c).get(mem) ? 1 : 0;
+    uint32_t v = 0;
+    std::memcpy(&v, Ptr<uint8_t>(address).get(emuenv.mem), size);
+    return v;
 }
 
 void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
@@ -281,19 +279,21 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
     if (state.boot != FrameRate::Boot::Set)
         return;
     const uint8_t *const fixed_flag = ptr(0x81538370, 1);
-    const uint8_t *const scene_flag = ptr(0x815399f8, 1);
     uint8_t *const step = ptr(0x81468998, 8);
-    if (!fixed_flag || !scene_flag || !step)
+    if (!fixed_flag || !step)
         return;
-    int scene = 0;
-    if (*scene_flag) {
-        const int hud = hud_shown(emuenv);
-        scene = hud != 1 ? 1 : 0;
-        if (hud != state.hud && state.switches < 200)
-            LOG_INFO("frame_rate: scene flag {}, HUD {}", *scene_flag, hud < 0 ? "not found" : hud ? "shown" : "hidden");
-        state.hud = hud;
-    } else
-        state.hud = -2;
+    const int64_t controller = read_guest(emuenv, 0x8146ac74, 4);
+    const int64_t hud = read_guest(emuenv, 0x8146c308, 4);
+    const std::array<int64_t, 4> signals = {
+        controller > 0 ? (read_guest(emuenv, static_cast<Address>(controller) + 0x10, 4) > 0 ? 1 : 0) : -1, // event scene
+        controller > 0 ? read_guest(emuenv, static_cast<Address>(controller) + 0x58, 4) : -1, // controller state
+        read_guest(emuenv, 0x815399f8, 1), // scene flag
+        hud > 0 ? read_guest(emuenv, static_cast<Address>(hud) + 0x1c, 1) : -1, // HUD shown
+    };
+    if (signals != state.signals && state.logged++ < 400)
+        LOG_INFO("frame_rate: event scene {}, controller state {}, scene flag {}, HUD shown {}", signals[0], signals[1], signals[2], signals[3]);
+    state.signals = signals;
+    const int scene = signals[0] == 1 ? 1 : 0;
     if (*fixed_flag) {
         // the fixed step: 1/60 in play at 60 fps, 1/30 in a scene at 30 (only values we know)
         const double from = static_cast<double>(scene ? 1.0f / 60.0f : 1.0f / 30.0f);
@@ -307,8 +307,7 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
         return;
     state.scene = scene;
     emuenv.display.vblank_start_count = scene ? 2 : 1;
-    if (state.switches++ < 200)
-        LOG_INFO("frame_rate: {}", scene ? "a scripted scene: 30 fps" : "60 fps");
+    LOG_INFO("frame_rate: {}", scene ? "a scripted scene: 30 fps" : "60 fps");
 }
 
 } // namespace
