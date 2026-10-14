@@ -61,6 +61,8 @@ struct TextureCacheInfo {
     uint16_t height = 0;
     uint16_t mip_count = 0;
     SceGxmTextureBaseFormat format;
+    // its mips are generated (State::generate_mips): uploaded decompressed, level 0 only
+    bool generate_mips = false;
 };
 
 struct SamplerCacheInfo {

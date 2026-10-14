@@ -556,8 +556,8 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
             pixels = texture_pixels_lineared.data();
         }
 
-        if (!support_dxt && gxm::is_bcn_format(base_format)) {
-            // decompress the texture
+        if ((!support_dxt || (current_info && current_info->generate_mips)) && gxm::is_bcn_format(base_format)) {
+            // decompress the texture (also to generate its mips, which needs a format that can be blitted)
             const int num_comp = gxm::get_num_components(base_format);
             texture_data_decompressed.resize(pixels_per_stride * memory_height * num_comp);
             decompress_compressed_texture(base_format, texture_data_decompressed.data(), pixels, pixels_per_stride, memory_height);

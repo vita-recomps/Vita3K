@@ -377,14 +377,37 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
     uint32_t width = gxm::get_width(gxm_texture);
     uint32_t height = gxm::get_height(gxm_texture);
 
-    const uint16_t mip_count = renderer::texture::get_upload_mip(gxm_texture.true_mip_count(), width, height);
+    uint16_t mip_count = renderer::texture::get_upload_mip(gxm_texture.true_mip_count(), width, height);
+
+    // State::generate_mips: a repeating swizzled or tiled texture of 64 px or more without mips
+    // gets a full chain, built on the GPU from level 0 (upload_done); a compressed one is
+    // decompressed first, as blits need an uncompressed format
+    const auto type = gxm_texture.texture_type();
+    const bool repeats = gxm_texture.uaddr_mode == SCE_GXM_TEXTURE_ADDR_REPEAT || gxm_texture.vaddr_mode == SCE_GXM_TEXTURE_ADDR_REPEAT;
+    bool generate_mips = state.generate_mips && mip_count == 1 && !is_cube && repeats && width >= 64 && height >= 64
+        && (type == SCE_GXM_TEXTURE_SWIZZLED || type == SCE_GXM_TEXTURE_TILED);
 
     vk::Format vk_format = texture::translate_format(base_format);
-    if (gxm::is_bcn_format(base_format) && !support_dxt)
+    if (gxm::is_bcn_format(base_format) && (!support_dxt || generate_mips))
         // texture will be decompressed
         vk_format = bcn_to_rgba8(vk_format);
     if (gxm_texture.gamma_mode)
         vk_format = linear_to_srgb(vk_format);
+    if (generate_mips) {
+        const vk::FormatFeatureFlags needed = vk::FormatFeatureFlagBits::eBlitSrc | vk::FormatFeatureFlagBits::eBlitDst
+            | vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+        generate_mips = (state.physical_device.getFormatProperties(vk_format).optimalTilingFeatures & needed) == needed;
+        if (!generate_mips && gxm::is_bcn_format(base_format) && support_dxt) {
+            // back to the compressed format
+            vk_format = texture::translate_format(base_format);
+            if (gxm_texture.gamma_mode)
+                vk_format = linear_to_srgb(vk_format);
+        }
+    }
+    if (generate_mips)
+        mip_count = static_cast<uint16_t>(std::bit_width(std::max(width, height)));
+    if (current_info)
+        current_info->generate_mips = generate_mips;
 
     current_texture->mip_count = mip_count;
     current_texture->is_cube = is_cube;
@@ -421,7 +444,8 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
         .arrayLayers = is_cube ? 6U : 1U,
         .samples = vk::SampleCountFlagBits::e1,
         .tiling = vk::ImageTiling::eOptimal,
-        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst
+            | (generate_mips ? vk::ImageUsageFlagBits::eTransferSrc : vk::ImageUsageFlags()),
         .sharingMode = vk::SharingMode::eExclusive,
         .initialLayout = vk::ImageLayout::eUndefined,
     };
@@ -538,6 +562,41 @@ void VKTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, ui
 }
 
 void VKTextureCache::upload_done() {
+    if (current_info && current_info->generate_mips && current_texture->mip_count > 1 && cmd_buffer) {
+        // State::generate_mips: each level from the one above, halving with a linear filter; level 0
+        // was just uploaded, all levels are in the transfer-destination layout
+        vkutil::Image &image = current_texture->texture;
+        int32_t w = static_cast<int32_t>(image.width), h = static_cast<int32_t>(image.height);
+        for (uint32_t level = 1; level < current_texture->mip_count; level++) {
+            const vk::ImageSubresourceRange above{
+                .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = level - 1, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1
+            };
+            vkutil::transition_image_layout(cmd_buffer, image.image, vkutil::ImageLayout::TransferDst, vkutil::ImageLayout::TransferSrc, above);
+            const int32_t nw = std::max(w / 2, 1), nh = std::max(h / 2, 1);
+            const vk::ImageBlit blit{
+                .srcSubresource = { vk::ImageAspectFlagBits::eColor, level - 1, 0, 1 },
+                .srcOffsets = std::array<vk::Offset3D, 2>{ vk::Offset3D{ 0, 0, 0 }, vk::Offset3D{ w, h, 1 } },
+                .dstSubresource = { vk::ImageAspectFlagBits::eColor, level, 0, 1 },
+                .dstOffsets = std::array<vk::Offset3D, 2>{ vk::Offset3D{ 0, 0, 0 }, vk::Offset3D{ nw, nh, 1 } },
+            };
+            cmd_buffer.blitImage(image.image, vk::ImageLayout::eTransferSrcOptimal, image.image, vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
+            w = nw;
+            h = nh;
+        }
+        const uint32_t last = current_texture->mip_count - 1;
+        const vk::ImageSubresourceRange upper{
+            .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = last, .baseArrayLayer = 0, .layerCount = 1
+        };
+        const vk::ImageSubresourceRange lowest{
+            .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = last, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1
+        };
+        vkutil::transition_image_layout(cmd_buffer, image.image, vkutil::ImageLayout::TransferSrc, vkutil::ImageLayout::SampledImage, upper);
+        vkutil::transition_image_layout(cmd_buffer, image.image, vkutil::ImageLayout::TransferDst, vkutil::ImageLayout::SampledImage, lowest);
+        image.layout = vkutil::ImageLayout::SampledImage;
+        cmd_buffer = nullptr;
+        is_texture_transfer_ready = false;
+        return;
+    }
     // transition the texture back to read only
     vk::ImageSubresourceRange range{
         .aspectMask = vk::ImageAspectFlagBits::eColor,

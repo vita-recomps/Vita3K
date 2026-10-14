@@ -91,6 +91,9 @@ struct State {
     // ss-delta: use the shader and pipeline caches without writing to them (a second copy of the
     // game running beside the first, which keeps them up to date)
     bool shader_cache_read_only = false;
+    // build mip chains for repeating textures the game ships without mips (Vulkan; a game's front
+    // end turns it on): they alias and shimmer in motion otherwise. Read when a texture is created.
+    bool generate_mips = false;
 
     FrameHost *frame = nullptr;
 
