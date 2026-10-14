@@ -231,15 +231,43 @@ std::optional<std::pair<float, float>> caution_eye(EmuEnvState &emuenv) {
 // mid-mission story scenes ran twice as fast at 60 with the step made 1/60 (owner, 2026-10-14).
 // So scripted scenes run at 30 fps as on the Vita, with the 1/30 step: the run loop waits for one
 // vblank per frame (sceDisplayWaitVblankStartCB), which then waits for two
-// (DisplayState::vblank_start_count). A scene is playing while [0x815399f8] != 0: the script
-// controller's scene start (0x81102c70 -> 0x81104428) sets it when it freezes the player, and its
-// end (0x8110291e -> 0x8110473c) clears it (0 in the hub and in play, 2 in a scene: memory dumps).
+// (DisplayState::vblank_start_count). A scene is playing while [0x815399f8] != 0 and the player
+// is frozen: the script controller's scene start (0x81102c70 -> 0x81104428) freezes the player
+// (bit 0x10 of [[player+0x8c]+0x24]) and records it there, and its end (0x8110291e -> 0x8110473c)
+// restores the player and clears it (0 in the hub and in play, 2 in a scene: memory dumps). A boss's
+// intro scene leads into the fight without that end, so the flag alone stayed set through the
+// fight (owner, 2026-10-14). The player is the object of the manager at [0x81469994] whose
+// [+0x18] is 1 (0x810d241c: [+0x810] objects at +0x10, 0x10 apart).
 struct FrameRate {
     enum class Boot { Waiting, Set, TooLate };
     Boot boot = Boot::Waiting;
     int scene = -1; // a scripted scene at 30 fps, as last set (-1: not yet)
+    int frozen = -1; // the player frozen, as last seen while the flag is set (for the log)
     int switches = 0; // logged switches
 };
+
+// whether the player is frozen (by a scripted scene), or -1 when there is no player
+int player_frozen(EmuEnvState &emuenv) {
+    auto &mem = emuenv.mem;
+    const auto read32 = [&](Address a, uint32_t &v) {
+        if (!a || !is_valid_addr(mem, a) || !is_valid_addr(mem, a + 3))
+            return false;
+        std::memcpy(&v, Ptr<uint8_t>(a).get(mem), 4);
+        return true;
+    };
+    uint32_t manager = 0, count = 0;
+    if (!read32(0x81469994, manager) || !read32(manager + 0x810, count) || count > 4096)
+        return -1;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t object = 0, kind = 0, body = 0, flags = 0;
+        if (!read32(manager + 0x10 + i * 0x10, object) || !object || !read32(object + 0x18, kind) || kind != 1)
+            continue;
+        if (!read32(object + 0x8c, body) || !read32(body + 0x24, flags))
+            return -1;
+        return (flags & 0x10) ? 1 : 0;
+    }
+    return -1;
+}
 
 void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
     auto &mem = emuenv.mem;
@@ -268,7 +296,16 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
     uint8_t *const step = ptr(0x81468998, 8);
     if (!fixed_flag || !scene_flag || !step)
         return;
-    const int scene = *scene_flag ? 1 : 0;
+    int scene = 0;
+    if (*scene_flag) {
+        const int frozen = player_frozen(emuenv);
+        // no player: a scene of its own (the flag says the start froze one, so this is rare)
+        scene = frozen != 0 ? 1 : 0;
+        if (frozen != state.frozen && state.switches < 200)
+            LOG_INFO("frame_rate: scene flag {}, player {}", *scene_flag, frozen < 0 ? "not found" : frozen ? "frozen" : "free");
+        state.frozen = frozen;
+    } else
+        state.frozen = -1;
     if (*fixed_flag) {
         // the fixed step: 1/60 in play at 60 fps, 1/30 in a scene at 30 (only values we know)
         const double from = static_cast<double>(scene ? 1.0f / 60.0f : 1.0f / 30.0f);
