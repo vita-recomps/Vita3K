@@ -64,6 +64,10 @@ public:
     uint32_t get_buffer_parameter_size() const override {
         return get_max_parameter_size();
     }
+    // the guest reads SceNgsEnvelopeStates through sceNgsVoiceGetStateData: games wait for
+    // nReleasing == 1 and a zero height before reusing a voice they keyed off
+    uint32_t get_guest_state_size() const override { return sizeof(SceNgsEnvelopeStates); }
+    void on_state_change(const MemState &mem, ModuleData &data, const VoiceState previous) override;
 };
 
 } // namespace ngs
