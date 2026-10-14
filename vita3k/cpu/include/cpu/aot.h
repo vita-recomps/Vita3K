@@ -58,6 +58,13 @@ void aot_release_reservation(MemState &mem, const std::string &module_stem);
 // ... and hold them again when that module is unloaded, for its next load (a firmware module
 // loaded per movie, such as libscemp4: freed in between, its place could be taken)
 void aot_restore_reservation(MemState &mem, const std::string &module_stem);
+// Without a gap: when a module unloads, its code segment (at its preferred base) stays allocated
+// and becomes the reservation (true: the loader then does not free it); when the module loads
+// again, the loader takes that kept allocation over as its code segment if it is large enough
+// (its address), instead of freeing it and allocating anew. Other threads allocate in between
+// otherwise: the movie module's place was taken this way (at 60 fps, in Shinobido 2).
+bool aot_keep_reservation(const std::string &module_stem, Address segment, uint32_t size);
+Address aot_take_reservation(const std::string &module_stem, uint32_t size);
 
 // The native function for a guest entry address (bit 0 set for Thumb), or null. A module's
 // functions become visible once its code has been checked against guest memory.

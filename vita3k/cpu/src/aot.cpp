@@ -55,6 +55,8 @@ struct LoadedModule {
     uint32_t lo = 0, hi = 0; // [first entry, last entry]
     uint32_t end = 0; // end of the last function's code
     Address reserved = 0; // the code pages, held until the module loads (aot_release_reservation)
+    uint32_t reserved_size = 0; // the size of that allocation
+    bool kept = false; // that allocation is the code segment of the last load (aot_keep_reservation)
     Address hold_base = 0, hold_size = 0; // what is held, to hold again when the module unloads
     std::atomic<Verified> verified{ Verified::unknown };
     std::mutex verify_mutex;
@@ -279,6 +281,7 @@ void aot_init(MemState &mem, Address sentinel) {
             m.reserved = try_alloc_at(mem, page, code_end - page, name.c_str());
             m.hold_size = code_end - page;
         }
+        m.reserved_size = m.reserved ? m.hold_size : 0;
         LOG_WARN_IF(!m.reserved, "AOT: {:08x}-{:08x} is already taken; {} may not load where its native code expects it", page, code_end, m.module->name);
     }
     registry.enabled = !registry.functions.empty();
@@ -347,6 +350,8 @@ void aot_release_reservation(MemState &mem, const std::string &module_stem) {
         if (name == module_stem) {
             free(mem, m->reserved);
             m->reserved = 0;
+            m->reserved_size = 0;
+            m->kept = false;
         }
     }
 }
@@ -360,9 +365,51 @@ void aot_restore_reservation(MemState &mem, const std::string &module_stem) {
             name.resize(dot);
         if (name == module_stem) {
             m->reserved = try_alloc_at(mem, m->hold_base, m->hold_size, fmt::format("aot_reserve:{}", m->module->name).c_str());
+            m->reserved_size = m->reserved ? m->hold_size : 0;
+            m->kept = false;
             LOG_WARN_IF(!m->reserved, "AOT: {:08x} is taken after {} unloaded; its next load may not match its native code", m->hold_base, m->module->name);
         }
     }
+}
+
+namespace {
+
+LoadedModule *held_module(const std::string &module_stem) {
+    for (const auto &m : registry.modules) {
+        if (!m->hold_size || !m->module || !m->module->name)
+            continue;
+        std::string name = m->module->name;
+        if (const auto dot = name.rfind('.'); dot != std::string::npos)
+            name.resize(dot);
+        if (name == module_stem)
+            return m.get();
+    }
+    return nullptr;
+}
+
+} // namespace
+
+bool aot_keep_reservation(const std::string &module_stem, Address segment, uint32_t size) {
+    LoadedModule *const m = held_module(module_stem);
+    if (!m || m->reserved || segment != m->hold_base)
+        return false;
+    m->reserved = segment;
+    m->reserved_size = size;
+    m->kept = true;
+    return true;
+}
+
+Address aot_take_reservation(const std::string &module_stem, uint32_t size) {
+    LoadedModule *const m = held_module(module_stem);
+    // only a kept segment: aot_init's hold also covers the data after the code, where the module's
+    // data segment goes (and its native code expects it)
+    if (!m || !m->reserved || !m->kept || m->reserved != m->hold_base || size > m->reserved_size)
+        return 0;
+    const Address address = m->reserved;
+    m->reserved = 0;
+    m->reserved_size = 0;
+    m->kept = false;
+    return address;
 }
 
 Address aot_preferred_base(const std::string &module_stem) {

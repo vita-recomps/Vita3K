@@ -653,9 +653,18 @@ SceUID load_self(KernelState &kernel, MemState &mem, const void *self, const std
                 // generated for, which aot_init keeps free for it (cpu/aot.h aot_preferred_base)
                 std::string stem = self_path.substr(self_path.find_last_of("/:") + 1);
                 stem = stem.substr(0, stem.rfind('.'));
-                if (seg_index == 0)
-                    aot_release_reservation(mem, stem);
                 if (isRelocatable && seg_index == 0) {
+                    // the reservation itself, when it is the module's place and large enough
+                    segment_address = aot_take_reservation(stem, seg_header.p_memsz);
+                    if (segment_address) {
+                        // it still holds the previous load's segment
+                        memset(Ptr<uint8_t>(segment_address).get(mem), 0, seg_header.p_memsz);
+                        LOG_INFO("{}: code placed at {}, where its native code expects it (its reservation)", self_path, log_hex(segment_address));
+                    }
+                }
+                if (seg_index == 0 && !segment_address)
+                    aot_release_reservation(mem, stem);
+                if (isRelocatable && seg_index == 0 && !segment_address) {
                     if (const Address base = aot_preferred_base(stem)) {
                         segment_address = try_alloc_at(mem, base, seg_header.p_memsz, alloc_name.c_str());
                         LOG_INFO_IF(segment_address, "{}: code placed at {}, where its native code expects it", self_path, log_hex(base));
@@ -856,20 +865,23 @@ int unload_self(KernelState &kernel, MemState &mem, KernelModule &module) {
     SceUID mod_nid = module_info->module_nid;
 
     // last step: free the memory
+    std::string stem = module.info.path;
+    stem = stem.substr(stem.find_last_of("/:") + 1);
+    stem = stem.substr(0, stem.rfind('.'));
     for (int i = 0; i < MODULE_INFO_NUM_SEGMENTS; i++) {
         const auto &segment = module.info.segments[i];
         if (segment.size == 0)
             continue;
 
         kernel.invalidate_jit_cache(segment.vaddr.address(), segment.memsz);
+        // ss-delta: a recompiled module's code segment stays allocated as its place until its
+        // next load, so that no other allocation can take it in between
+        if (i == 0 && aot_keep_reservation(stem, segment.vaddr.address(), segment.memsz))
+            continue;
         free(mem, module.info.segments[i].vaddr.address());
     }
-    {
-        // ss-delta: a recompiled module's place is held again until its next load
-        std::string stem = module.info.path;
-        stem = stem.substr(stem.find_last_of("/:") + 1);
-        aot_restore_reservation(mem, stem.substr(0, stem.rfind('.')));
-    }
+    // a recompiled module's place is held again until its next load, when it was not kept above
+    aot_restore_reservation(mem, stem);
 
     {
         const std::lock_guard<std::mutex> lock(kernel.mutex);
