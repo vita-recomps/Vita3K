@@ -19,6 +19,7 @@
 // (game-frontend/profile.h). The utakata project's docs describe the port.
 
 #include "../../game-frontend/profile.h"
+#include "saves.h"
 
 #include <display/state.h>
 #include <emuenv/state.h>
@@ -41,6 +42,7 @@
 
 // provides WinMain for the windowed executable, which calls main below
 #include <SDL3/SDL_main.h>
+#include <SDL3/SDL_messagebox.h>
 
 namespace {
 
@@ -320,9 +322,22 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
     LOG_INFO("frame_rate: {}", !scene ? "60 fps" : menus ? "menus (no mission): 30 fps" : "an event scene after a load: 30 fps");
 }
 
+// --import-save / --export-save
+struct SaveCommand {
+    std::string import_from, export_to;
+    int slot = -1; // -1: every slot
+    bool quiet = false;
+};
+
 } // namespace
 
 int main(int argc, char *argv[]) {
+    // the game's own command line, besides the frontend's (game-frontend/frontend.cpp):
+    //   --import-save <folder|zip> copy saves in (decrypted, e.g. from a Vita), keeping the old ones
+    //   --export-save <folder>     copy saves out
+    //   --slot <0-9>               one save slot for the two above (default: every slot)
+    //   --quiet                    no message box for the two above (the result is in the log)
+    SaveCommand save;
     game_frontend::Profile profile;
     profile.title_id = TITLE_ID;
     profile.name = "Shinobido 2: Revenge of Zen";
@@ -330,6 +345,38 @@ int main(int argc, char *argv[]) {
     profile.ini = ini_layout();
     profile.default_touches = { { "caution", 896, 260, "F", "righttrigger" } };
     profile.touch_targets["caution"] = caution_eye;
+    profile.hooks.parse_arg = [&](game_frontend::Context &, const std::vector<std::string> &args, size_t &i) {
+        const std::string &arg = args[i];
+        const bool has_value = i + 1 < args.size();
+        if (arg == "--import-save" && has_value)
+            save.import_from = args[++i];
+        else if (arg == "--export-save" && has_value)
+            save.export_to = args[++i];
+        else if (arg == "--slot" && has_value)
+            save.slot = std::atoi(args[++i].c_str());
+        else if (arg == "--quiet")
+            save.quiet = true;
+        else
+            return false;
+        return true;
+    };
+    profile.hooks.before_init = [&](game_frontend::Context &ctx) -> std::optional<int> {
+        if (save.import_from.empty() && save.export_to.empty())
+            return std::nullopt;
+        const auto &vita_fs = ctx.settings->vita_fs;
+        std::string message;
+        const bool ok = !save.import_from.empty()
+            ? shinobido2::import_save(vita_fs, fs_utils::utf8_to_path(save.import_from), save.slot, ctx.data_dir / "save-backups", message)
+            : shinobido2::export_save(vita_fs, fs_utils::utf8_to_path(save.export_to), save.slot, message);
+        if (ok)
+            LOG_INFO("Save: {}", message);
+        else
+            LOG_ERROR("Save: {}", message);
+        if (!save.quiet)
+            SDL_ShowSimpleMessageBox(ok ? SDL_MESSAGEBOX_INFORMATION : SDL_MESSAGEBOX_ERROR, ctx.window_name.c_str(),
+                ("Save: " + message).c_str(), nullptr);
+        return ok ? 0 : 1;
+    };
     profile.hooks.before_run = [](game_frontend::Context &ctx) {
         const bool effects = ctx.settings->values.get_bool("audio.effects");
         ctx.emuenv->ngs.effects.reverb = effects;
