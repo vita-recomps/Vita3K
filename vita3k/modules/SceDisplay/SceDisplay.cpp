@@ -243,12 +243,12 @@ EXPORT(SceInt32, sceDisplayWaitSetFrameBufMultiCB, SceUInt vcount) {
 
 EXPORT(SceInt32, sceDisplayWaitVblankStart) {
     TRACY_FUNC(sceDisplayWaitVblankStart);
-    return display_wait(emuenv, thread_id, 1, false, false);
+    return display_wait(emuenv, thread_id, emuenv.display.vblank_start_count.load(), false, false);
 }
 
 EXPORT(SceInt32, sceDisplayWaitVblankStartCB) {
     TRACY_FUNC(sceDisplayWaitVblankStartCB);
-    return display_wait(emuenv, thread_id, 1, false, true);
+    return display_wait(emuenv, thread_id, emuenv.display.vblank_start_count.load(), false, true);
 }
 
 EXPORT(SceInt32, sceDisplayWaitVblankStartMulti, SceUInt vcount) {

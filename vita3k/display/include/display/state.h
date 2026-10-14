@@ -72,6 +72,9 @@ struct DisplayState {
     WaitQueue<VBlankWaitEntry> vblank_waiters;
     std::atomic<uint64_t> last_setframe_vblank_count = 0;
     std::map<SceUID, CallbackPtr> vblank_callbacks{};
+    // vblanks that sceDisplayWaitVblankStart(CB) waits for: 1 as on the Vita; a game's front end
+    // sets 2 to run a game that waits once per frame at 30 fps for a while (shinobido2)
+    std::atomic<int> vblank_start_count{ 1 };
 
     // if set to true, make sceDisplayWaitVblankStartMulti/sceDisplayWaitSetFrameBufMulti behave as sceDisplayWaitVblankStart/sceDisplayWaitSetFrameBuf
     // this allows some game running at 30fps to run at 60fps without any issue

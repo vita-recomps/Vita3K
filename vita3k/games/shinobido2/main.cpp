@@ -20,6 +20,7 @@
 
 #include "../../game-frontend/profile.h"
 
+#include <display/state.h>
 #include <emuenv/state.h>
 #include <mem/functions.h>
 #include <mem/ptr.h>
@@ -224,14 +225,20 @@ std::optional<std::pair<float, float>> caution_eye(EmuEnvState &emuenv) {
 // means it is too late and the rate is left at 30.
 // The game's time module (0x81054b6e, every frame) measures the frame time (an average over 8
 // frames, at most [0x81468998]) and stores the step every update uses at 0x81468978, unless it is
-// in fixed-step mode ([0x81538370] != 0), where the step is [0x81468998] itself. Application
-// init and some scene changes select fixed steps of 1/30 s (0x81054ee8 with 0x3d088889), so in
-// fixed mode a step of exactly (float) 1/30 becomes (float) 1/60, every tick; the measured mode
-// needs nothing.
+// in fixed-step mode ([0x81538370] != 0), where the step is [0x81468998] itself, 1/30 s.
+// Application init and scripted scenes select fixed mode, and play can stay in it, so a fixed
+// 1/30 step becomes 1/60 at 60 fps. But some scripted scenes step per frame elsewhere too: two
+// mid-mission story scenes ran twice as fast at 60 with the step made 1/60 (owner, 2026-10-14).
+// So scripted scenes run at 30 fps as on the Vita, with the 1/30 step: the run loop waits for one
+// vblank per frame (sceDisplayWaitVblankStartCB), which then waits for two
+// (DisplayState::vblank_start_count). A scene is playing while [0x815399f8] != 0: the script
+// controller's scene start (0x81102c70 -> 0x81104428) sets it when it freezes the player, and its
+// end (0x8110291e -> 0x8110473c) clears it (0 in the hub and in play, 2 in a scene: memory dumps).
 struct FrameRate {
     enum class Boot { Waiting, Set, TooLate };
     Boot boot = Boot::Waiting;
-    int fixed_steps = 0; // fixed 1/30 steps changed to 1/60
+    int scene = -1; // a scripted scene at 30 fps, as last set (-1: not yet)
+    int switches = 0; // logged switches
 };
 
 void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
@@ -256,18 +263,27 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
     }
     if (state.boot != FrameRate::Boot::Set)
         return;
-    const uint8_t *const fixed = ptr(0x81538370, 1);
+    const uint8_t *const fixed_flag = ptr(0x81538370, 1);
+    const uint8_t *const scene_flag = ptr(0x815399f8, 1);
     uint8_t *const step = ptr(0x81468998, 8);
-    if (!fixed || !step || !*fixed)
+    if (!fixed_flag || !scene_flag || !step)
         return;
-    double value;
-    std::memcpy(&value, step, 8);
-    if (value != static_cast<double>(1.0f / 30.0f))
+    const int scene = *scene_flag ? 1 : 0;
+    if (*fixed_flag) {
+        // the fixed step: 1/60 in play at 60 fps, 1/30 in a scene at 30 (only values we know)
+        const double from = static_cast<double>(scene ? 1.0f / 60.0f : 1.0f / 30.0f);
+        const double to = static_cast<double>(scene ? 1.0f / 30.0f : 1.0f / 60.0f);
+        double value;
+        std::memcpy(&value, step, 8);
+        if (value == from)
+            std::memcpy(step, &to, 8);
+    }
+    if (scene == state.scene)
         return;
-    value = static_cast<double>(1.0f / 60.0f);
-    std::memcpy(step, &value, 8);
-    if (state.fixed_steps++ < 20)
-        LOG_INFO("frame_rate: fixed step 1/30 s -> 1/60 s");
+    state.scene = scene;
+    emuenv.display.vblank_start_count = scene ? 2 : 1;
+    if (state.switches++ < 200)
+        LOG_INFO("frame_rate: {}", scene ? "a scripted scene: 30 fps" : "60 fps");
 }
 
 } // namespace
