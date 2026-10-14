@@ -241,10 +241,13 @@ void Keyboard::update(EmuEnvState &emuenv) {
     kb.axes[3] = axis(cfg.keyboard_rightstick_up, cfg.keyboard_rightstick_up_alt, cfg.keyboard_rightstick_down, cfg.keyboard_rightstick_down_alt);
 }
 
-void Touches::configure(const std::vector<TouchBinding> &touches, std::vector<std::string> &warnings) {
+void Touches::configure(const std::vector<TouchBinding> &touches, std::vector<std::string> &warnings,
+    const std::map<std::string, Target> &targets) {
     bindings.clear();
     for (const auto &touch : touches) {
         Binding b{ touch.x, touch.y };
+        if (const auto it = targets.find(touch.name); it != targets.end())
+            b.target = it->second;
         for (const auto &key : split_list(touch.keys)) {
             const auto code = parse_key(key);
             if (code == PhysicalKeyCode::Unbound)
@@ -289,7 +292,10 @@ void Touches::update(EmuEnvState &emuenv, const Keyboard &keyboard) {
                     down = true;
             }
             // ids that stay the same while a finger is down, apart from the mouse's (0-127)
-            if (down)
+            if (down && b.target) {
+                if (const auto point = b.target(emuenv))
+                    held.push_back(at(point->first, point->second, static_cast<uint8_t>(100 + i % 16)));
+            } else if (down)
                 held.push_back(at(b.x, b.y, static_cast<uint8_t>(100 + i % 16)));
         }
         for (size_t i = 0; i < emuenv.ctrl.injected_touches.size(); i++) {

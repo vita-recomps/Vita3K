@@ -23,7 +23,9 @@
 
 #include <input/physical_key.h>
 
+#include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -56,7 +58,11 @@ private:
 // ones the test driver holds through the input pipe
 class Touches {
 public:
-    void configure(const std::vector<TouchBinding> &touches, std::vector<std::string> &warnings);
+    // a touch whose point moves (a game's HUD element): the point each frame in 960x544 screen
+    // pixels, or none (no finger goes down while there is nothing to touch)
+    using Target = std::function<std::optional<std::pair<float, float>>(EmuEnvState &)>;
+    void configure(const std::vector<TouchBinding> &touches, std::vector<std::string> &warnings,
+        const std::map<std::string, Target> &targets = {});
     // once a frame: the held fingers into the touch state
     void update(EmuEnvState &emuenv, const Keyboard &keyboard);
 
@@ -66,6 +72,7 @@ private:
         std::vector<input::PhysicalKeyCode> keys;
         int gamepad_button = -1; // SDL_GamepadButton
         int gamepad_axis = -1; // SDL_GamepadAxis (a trigger)
+        Target target; // when set, it gives the point instead of x, y
     };
     std::vector<Binding> bindings;
 };

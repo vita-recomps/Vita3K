@@ -414,7 +414,7 @@ int run(Profile &profile, int argc, char *argv[]) {
     Touches touches;
     {
         std::vector<std::string> touch_warnings;
-        touches.configure(settings.touches, touch_warnings);
+        touches.configure(settings.touches, touch_warnings, profile.touch_targets);
         for (const auto &line : touch_warnings)
             LOG_WARN("{}.ini: {}", profile.id, line);
     }

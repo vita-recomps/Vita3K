@@ -21,11 +21,13 @@
 // (frontend.cpp) runs one installed game, described by a Profile. Each game's executable
 // (games/<id>/main.cpp) fills in its Profile and calls game_frontend::run.
 
+#include "input.h"
 #include "settings.h"
 
 #include <util/fs.h>
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -71,6 +73,8 @@ struct Profile {
     IniLayout ini;
     // [touch] bindings when the file has no [touch] section at all (a file from before it existed)
     std::vector<TouchBinding> default_touches;
+    // [touch] bindings whose point the game decides (a HUD element that moves), by binding name
+    std::map<std::string, Touches::Target> touch_targets;
     // Ad Hoc Play: --player 2-4 run more copies with their own Vita user, config and log
     bool multiplayer = false;
     // the executable has an icon resource with id 101 (its .rc); the window then uses it
