@@ -222,6 +222,14 @@ void unscale_depth_uvs(SceGxmProgram &program) {
 // stop. So loading screens run at 30 fps: the NowLoadingTask singleton (*0x81c9603c) shows one
 // while its state (+0xa4) is 2, 3 or 5 (opening, "roading_loop", "roading_end"; 0x812b58ec). After
 // a quest it plays the loop backwards (6) and rests in 4 until reset, so those stay at 60.
+// The frame timer's period for a rate. At 60 it is 16000 us, not 16666: the game waits out the
+// timer and then flips on the next vblank, and a host wait overshoots by up to about a millisecond,
+// so with 16666 a few frames a second just missed their vblank and took two (57-58 fps on every GPU).
+// The flip still waits for each vblank, so the game can't run faster than 60.
+static uint64_t frame_period_us(int fps) {
+    return fps == 60 ? 16000 : 1000000ull / fps;
+}
+
 // Called every frame; returns the rate it set (0: not yet).
 int update_frame_rate(EmuEnvState &emuenv, int fps, int current) {
     auto &mem = emuenv.mem;
@@ -238,13 +246,13 @@ int update_frame_rate(EmuEnvState &emuenv, int fps, int current) {
     const uint32_t *const loading_state = loading_task && *loading_task ? u32(*loading_task + 0xa4) : nullptr;
     const uint32_t state = loading_state ? *loading_state : 0;
     const int want = state == 2 || state == 3 || state == 5 ? 30 : fps;
-    if (want == current && *period == 1000000u / want)
+    if (want == current && *period == frame_period_us(want))
         return current;
-    if ((*period != 1000000u / 30 && *period != 1000000u / fps) || (*flip != 2 && *flip != 60u / fps)) {
+    if ((*period != frame_period_us(30) && *period != frame_period_us(fps)) || (*flip != 2 && *flip != 60u / fps)) {
         LOG_WARN("frame_rate: unexpected frame timer {} us / flip threshold {}; left alone", *period, *flip);
         return -1;
     }
-    *period = 1000000 / want;
+    *period = frame_period_us(want);
     *flip = 60 / want;
     LOG_INFO("frame_rate: {} fps{} (loading state {}, frame timer {} us, flip every {} vblank)", want, want != fps ? " for a loading screen" : "", state, *period, *flip);
     return want;
