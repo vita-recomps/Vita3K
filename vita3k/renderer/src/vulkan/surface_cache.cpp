@@ -1352,6 +1352,18 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
     };
     cmd_buffer.copyImageToBuffer(image_to_copy, image_layout, buffer, copy);
 
+    if (last_written_surface->need_buffer_sync) {
+        // the CPU reads its copy from a buffer of its own in cached system memory: reading the mapped
+        // buffer, which may be in video memory, costs milliseconds per frame on a discrete GPU
+        const uint32_t readback_size = last_written_surface->stride_bytes * last_written_surface->original_height;
+        if (!last_written_surface->readback_buffer || last_written_surface->readback_buffer->size < readback_size) {
+            last_written_surface->readback_buffer = std::make_unique<vkutil::Buffer>(readback_size);
+            last_written_surface->readback_buffer->init_buffer(vk::BufferUsageFlagBits::eTransferDst, vkutil::vma_readback_alloc);
+        }
+        copy.bufferOffset = 0;
+        cmd_buffer.copyImageToBuffer(image_to_copy, image_layout, last_written_surface->readback_buffer->buffer, copy);
+    }
+
     ColorSurfaceCacheInfo *return_value = last_written_surface;
     last_written_surface = nullptr;
 

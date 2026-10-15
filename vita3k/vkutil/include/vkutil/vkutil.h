@@ -174,6 +174,15 @@ static constexpr vma::AllocationCreateInfo vma_mapped_alloc = {
     .preferredFlags = vk::MemoryPropertyFlagBits::eHostCoherent
 };
 
+// for data the CPU reads back from the GPU: system memory the CPU caches. Memory that is both
+// device-local and host-visible (Resizable BAR) is fast to write but very slow to read from the CPU
+static constexpr vma::AllocationCreateInfo vma_readback_alloc = {
+    .flags = vma::AllocationCreateFlagBits::eHostAccessRandom | vma::AllocationCreateFlagBits::eMapped,
+    .usage = vma::MemoryUsage::eAutoPreferHost,
+    .requiredFlags = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+    .preferredFlags = vk::MemoryPropertyFlagBits::eHostCached
+};
+
 static constexpr vma::AllocationCreateInfo vma_host_visible = {
     .flags = vma::AllocationCreateFlagBits::eHostAccessSequentialWrite,
     .usage = vma::MemoryUsage::eAuto,

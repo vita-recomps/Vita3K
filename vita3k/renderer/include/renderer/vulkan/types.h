@@ -212,6 +212,8 @@ struct CallbackRequest {
 struct BufferSyncRequest {
     Address location;
     uint32_t size;
+    // copy from here instead of the mapped buffer (a surface sync's readback buffer)
+    const uint8_t *source = nullptr;
 };
 
 // A parallel thread is handling these request and telling other waiting threads

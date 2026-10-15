@@ -95,6 +95,10 @@ void VKContext::wait_thread_function(const MemState &mem) {
                        },
                        [&](BufferSyncRequest &request) {
                            wait_for_fences();
+                           if (request.source) {
+                               memcpy(Ptr<void>(request.location).get(mem), request.source, request.size);
+                               return;
+                           }
                            auto mem_it = state.mapped_memories.lower_bound(request.location);
                            if (mem_it == state.mapped_memories.end() || mem_it->first + mem_it->second.size < request.location + request.size) {
                                LOG_ERROR("Buffer Sync request for {}-{} is not fully mapped", log_hex(request.location), log_hex(request.location + request.size));
@@ -494,8 +498,14 @@ void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNot
             }
 
             // we must sync the two buffers
-            if (surface_info && surface_info->need_buffer_sync)
-                state.request_queue.push(BufferSyncRequest{ surface_info->data.address(), static_cast<uint32_t>(surface_info->total_bytes) });
+            if (surface_info && surface_info->need_buffer_sync) {
+                const vkutil::Buffer *readback = surface_info->readback_buffer.get();
+                const uint32_t size = static_cast<uint32_t>(surface_info->total_bytes);
+                if (readback && readback->mapped_data && readback->size >= size)
+                    state.request_queue.push(BufferSyncRequest{ surface_info->data.address(), size, static_cast<const uint8_t *>(readback->mapped_data) });
+                else
+                    state.request_queue.push(BufferSyncRequest{ surface_info->data.address(), size });
+            }
         }
 
         if (surface_info && surface_info->need_post_surface_sync) {

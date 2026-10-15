@@ -97,6 +97,8 @@ struct ColorSurfaceCacheInfo : public SurfaceCacheInfo {
 
     // only used for 3-component rgb textures which can't be copied directly
     std::unique_ptr<vkutil::Buffer> copy_buffer;
+    // surface sync's copy for the CPU, in cached system memory (vkutil::vma_readback_alloc)
+    std::unique_ptr<vkutil::Buffer> readback_buffer;
 
     // pointer shared with the memory trap indicating if this surface sync is needed
     std::shared_ptr<bool> need_surface_sync;
