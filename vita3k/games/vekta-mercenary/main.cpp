@@ -44,6 +44,10 @@ game_frontend::IniLayout ini_layout() {
                 { layout::scale(), layout::window_scale(), layout::fullscreen(id, exe), layout::vsync(),
                     layout::filter(), layout::mipmaps(false) } },
             layout::audio(),
+            { "controls", "",
+                { { "pstv_mode", game_frontend::SettingSpec::Kind::Bool, "false", 0, 0, {},
+                    "Run as a PS TV, where the game takes a DualShock and has no touchscreens (its\n"
+                    "update 1.11 controls). Being studied (the project's D8). Read when the game starts." } } },
             layout::recompiled(id),
             layout::debug(id),
             layout::keyboard(),
@@ -61,10 +65,12 @@ int main(int argc, char *argv[]) {
     profile.name = "Killzone Mercenary";
     profile.id = "vekta-mercenary";
     profile.ini = ini_layout();
-    profile.hooks.configure = [](game_frontend::Context &, Config &cfg) {
+    profile.hooks.configure = [](game_frontend::Context &ctx, Config &cfg) {
         // the game's shaders hang the GPU at its first level without this
         // (shader/src/translator/data.cpp, vpck)
         cfg.vpck_zero_fill = true;
+        // a PS TV: pads on the external ports, the PS TV model (SceCtrl, SceSysmem)
+        cfg.pstv_mode = ctx.settings->values.get_bool("controls.pstv_mode");
     };
     return game_frontend::run(profile, argc, argv);
 }

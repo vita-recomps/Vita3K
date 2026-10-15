@@ -415,6 +415,8 @@ static void retrieve_ctrl_data(EmuEnvState &emuenv, int port, bool is_v2, bool n
     if (emuenv.cfg.current_config.pstv_mode) {
         if (port == 1) {
             apply_keyboard(&buttons, axes.data(), is_v2, emuenv);
+            // input injected by a test driver (v3kdrive's pipe) goes where the keyboard goes
+            apply_injected(&buttons, axes.data(), is_v2, state);
         }
         for (const auto &[_, controller] : state.controllers) {
             if (controller.port + 1 == port) {
