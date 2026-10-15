@@ -287,7 +287,9 @@ if(APPLE OR NOT FORCE_BUILD_OPENSSL_MAC)
 	endif()
 endif()
 
-if(NOT FORCE_BUILD_OPENSSL_MAC)
+# the single-game executables ship their OpenSSL DLLs: always the pinned prebuilt one on MSVC, never
+# whatever OpenSSL the build machine has (a CI runner's 3.x would be linked but not shipped)
+if(NOT FORCE_BUILD_OPENSSL_MAC AND NOT (MSVC AND VITA3K_GAMES_ONLY))
 	find_package(OpenSSL QUIET)
 endif()
 
