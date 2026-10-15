@@ -250,8 +250,18 @@ void create(SceGxmSyncObject *sync, State &state) {
     sync->being_deleted = false;
 }
 
-void destroy(SceGxmSyncObject *sync, State &state) {
-    // nothing to do right now
+void destroy(SceGxmSyncObject *sync, State &state, std::function<void()> release) {
+    // With memory mapping, Vulkan's wait thread signals sync objects from its queue
+    // (SyncSignalRequest holds the object's address). A game may destroy one while a signal for it
+    // is still queued (Killzone Mercenary does at a level load), and the signal would then lock a
+    // freed object. The queue is in order, so freeing from a request queued now runs after every
+    // signal already queued for it. Idea from Vita3K-Plus (nckstwrt, commit 7814ed87).
+    if (release && state.current_backend == Backend::Vulkan && state.features.enable_memory_mapping) {
+        auto &vk_state = static_cast<vulkan::VKState &>(state);
+        vk_state.request_queue.push(vulkan::CallbackRequest{ new vulkan::CallbackRequestFunction(std::move(release)) });
+    } else if (release) {
+        release();
+    }
 }
 
 bool init(FrameHost &frame, std::unique_ptr<State> &state, Backend backend, const Config &config, const Root &root_paths) {
