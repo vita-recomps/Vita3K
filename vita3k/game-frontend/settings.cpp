@@ -323,6 +323,10 @@ Settings load_settings(const fs::path &dir, const std::string &id, const IniLayo
     }
     if (declared("debug.validation_layer"))
         out.validation_layer = values.get_bool("debug.validation_layer");
+    if (declared("debug.surface_sync"))
+        out.surface_sync = values.get_bool("debug.surface_sync");
+    if (declared("debug.high_accuracy"))
+        out.high_accuracy = values.get_bool("debug.high_accuracy");
     out.keyboard = values.section("keyboard");
     out.gamepad = values.section("gamepad");
 
@@ -443,6 +447,10 @@ IniSection debug(const std::string &id) {
             { "log_level", Kind::Choice, "info", 0, 0, { "trace", "debug", "info", "warn", "error", "critical", "off" },
                 fmt::format("Log detail in {}/vita3k.log: trace, debug, info, warn, error, critical, off.", id) },
             { "validation_layer", Kind::Bool, "false", 0, 0, {}, "The Vulkan validation layer (needs the Vulkan SDK; slow)." },
+            { "surface_sync", Kind::Bool, "true", 0, 0, {},
+                "Vita3K's surface sync (effects such as haze and smoke need it). false can be faster." },
+            { "high_accuracy", Kind::Bool, "true", 0, 0, {},
+                "Vita3K's high-accuracy rendering (steady smoke). false is faster but can flicker." },
         } };
 }
 

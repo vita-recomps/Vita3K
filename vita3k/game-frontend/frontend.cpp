@@ -287,10 +287,10 @@ int run(Profile &profile, int argc, char *argv[]) {
     cfg.offline = true;
     cfg.check_for_updates = false;
     // Vulkan, surface sync and high accuracy, double-buffered memory mapping (ss-delta D4 update 4);
-    // a game's configure hook can change them
+    // [debug] surface_sync and high_accuracy, or a game's configure hook, can change them
     cfg.backend_renderer = "Vulkan";
-    cfg.high_accuracy = true;
-    cfg.disable_surface_sync = false;
+    cfg.high_accuracy = settings.high_accuracy;
+    cfg.disable_surface_sync = !settings.surface_sync;
     cfg.memory_mapping = "double-buffer";
     // a pipeline seen for the first time is compiled in the background (its draws are skipped
     // meanwhile) and kept in the pipeline cache next to the executable; no on-screen notice

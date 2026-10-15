@@ -114,6 +114,8 @@ struct Settings {
     // [debug]
     int log_level = 2; // spdlog: 0 trace ... 6 off
     bool validation_layer = false;
+    bool surface_sync = true; // Vita3K's surface sync (ss-delta D4 update 4)
+    bool high_accuracy = true;
     // [keyboard] and [gamepad]: Vita button -> keys / gamepad button, applied by input.cpp
     std::map<std::string, std::string> keyboard, gamepad;
     // [touch]
