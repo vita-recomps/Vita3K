@@ -103,7 +103,7 @@ if(NOT MSVC)
 	add_compile_options(-Wformat -Werror=format-security)
 endif()
 
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT VITA3K_GAMES_ONLY)
 	include(${CMAKE_SOURCE_DIR}/cmake/qt6.cmake)
 endif()
 
@@ -121,7 +121,7 @@ add_subdirectory(display)
 add_subdirectory(features)
 add_subdirectory(glutil)
 add_subdirectory(updater)
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT VITA3K_GAMES_ONLY)
 	add_subdirectory(gui-qt)
 endif()
 add_subdirectory(gxm)
@@ -152,6 +152,9 @@ add_subdirectory(util)
 add_subdirectory(gdbstub)
 add_subdirectory(packages)
 add_subdirectory(vkutil)
+
+# Vita3K itself (VITA3K_GAMES_ONLY leaves it out, with Qt)
+if(NOT VITA3K_GAMES_ONLY)
 
 if(ANDROID)
 	add_library(vita3k SHARED
@@ -466,6 +469,8 @@ if(TRACY_ENABLE_ON_CORE_COMPONENTS)
 	target_link_libraries(vita3k PRIVATE tracy)
 endif()
 
+endif() # NOT VITA3K_GAMES_ONLY
+
 # Single-game executables on the SDL frontend, without the Qt interface (game-frontend/profile.h):
 # the shared frontend is a library, and each game is a small executable with its profile
 # (games/<id>/main.cpp). They run from the folder Vita3K.exe is built into, whose data and
@@ -486,7 +491,26 @@ if(WIN32)
 		add_executable(${target} WIN32 ${ARGN} util/src/vc_runtime_checker.cpp resource.h Windows.manifest)
 		target_link_libraries(${target} PRIVATE game-frontend)
 		set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-		add_dependencies(${target} vita3k)
+		if(VITA3K_GAMES_ONLY)
+			# what Vita3K's own build would have put next to the executables
+			add_custom_command(TARGET ${target} POST_BUILD
+				COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../data" "$<TARGET_FILE_DIR:${target}>/data"
+				COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/shaders-builtin" "$<TARGET_FILE_DIR:${target}>/shaders-builtin"
+				COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/icons" "$<TARGET_FILE_DIR:${target}>/icons"
+				COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/COPYING.txt" "$<TARGET_FILE_DIR:${target}>/COPYING.txt")
+			if(USE_DISCORD_RICH_PRESENCE)
+				add_custom_command(TARGET ${target} POST_BUILD
+					COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/external/discord_game_sdk/lib/x86_64/discord_game_sdk.dll" "$<TARGET_FILE_DIR:${target}>")
+			endif()
+			if(EXISTS "${OPENSSL_ROOT_DIR}")
+				add_custom_command(TARGET ${target} POST_BUILD
+					COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_ROOT_DIR}/bin/libssl-4-x64.dll" "$<TARGET_FILE_DIR:${target}>"
+					COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_ROOT_DIR}/bin/libcrypto-4-x64.dll" "$<TARGET_FILE_DIR:${target}>")
+			endif()
+		else()
+			# Vita3K's build copies data, shaders-builtin and the DLLs into the shared folder
+			add_dependencies(${target} vita3k)
+		endif()
 	endfunction()
 
 	# Soul Sacrifice Delta (PCSA00152)

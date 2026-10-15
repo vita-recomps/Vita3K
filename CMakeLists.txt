@@ -160,6 +160,8 @@ endmacro(boost_compile)
 
 # ss-delta: without the JIT only recompiled code runs (cpu/impl/native_cpu.h)
 option(VITA3K_DYNARMIC "Build the dynarmic JIT" ON)
+# the single-game executables only (vita3k/games), without Vita3K.exe and its Qt interface: no Qt needed
+option(VITA3K_GAMES_ONLY "Build only the single-game executables, without Qt" OFF)
 option(VITA3K_FORCE_CUSTOM_BOOST "Force Vita3K build process to use the Boost version included with the repository" OFF)
 option(VITA3K_FORCE_SYSTEM_BOOST "Force Vita3K build process to use the Boost version in the system and CMake's default paths and ignore the Boost version included with Vita3K" OFF)
 
