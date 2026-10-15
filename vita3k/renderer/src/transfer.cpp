@@ -30,16 +30,47 @@
 // keywords.h must be after tracy.h for msvc compiler
 #include <util/keywords.h>
 
+#include <vector>
+
 extern "C" {
 #include <libswscale/swscale.h>
 }
 
 namespace renderer {
 
+// the bytes a transfer image covers, from its address, in its layout
+template <typename T>
+static size_t transfer_footprint(const SceGxmTransferImage &img, SceGxmTransferType type) {
+    if (img.width == 0 || img.height == 0)
+        return 0;
+    if (type == SCE_GXM_TRANSFER_SWIZZLED) {
+        // a Morton code grows with each coordinate, so the far corner is the last element
+        return (static_cast<size_t>(texture::encode_morton(img.x + img.width - 1, img.y + img.height - 1, img.width, img.height)) + 1) * sizeof(T);
+    }
+    const size_t stride = img.stride ? img.stride : img.width * sizeof(T);
+    const size_t rows = img.y + img.height;
+    // tiled images are laid out in 32x32 tiles
+    return (type == SCE_GXM_TRANSFER_TILED ? (rows + 31) / 32 * 32 : rows) * stride;
+}
+
 template <typename T, SceGxmTransferColorKeyMode mode, SceGxmTransferType src_type, SceGxmTransferType dst_type>
 static void perform_transfer_copy_impl(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, uint32_t key_value, uint32_t key_mask) {
-    T *__restrict__ src_ptr = src.address.cast<T>().get(mem);
-    T *__restrict__ dst_ptr = dst.address.cast<T>().get(mem);
+    const T *src_ptr = src.address.cast<T>().get(mem);
+    T *dst_ptr = dst.address.cast<T>().get(mem);
+
+    // A copy may move data within one buffer, its source and destination overlapping (Killzone
+    // Mercenary moves texture data this way). Copying element by element would then read what it
+    // has already overwritten, so it reads from a snapshot of the source instead, as memmove does.
+    // Found by Vita3K-Plus (nckstwrt/Vita3K-Plus, commit 7814ed87).
+    const size_t src_bytes = transfer_footprint<T>(src, src_type);
+    const size_t dst_bytes = transfer_footprint<T>(dst, dst_type);
+    const uintptr_t src_start = reinterpret_cast<uintptr_t>(src_ptr);
+    const uintptr_t dst_start = reinterpret_cast<uintptr_t>(dst_ptr);
+    std::vector<T> src_snapshot;
+    if (src_start < dst_start + dst_bytes && dst_start < src_start + src_bytes) {
+        src_snapshot.assign(src_ptr, src_ptr + (src_bytes + sizeof(T) - 1) / sizeof(T));
+        src_ptr = src_snapshot.data();
+    }
 
     auto compute_offset = [&](uint32_t dx, uint32_t dy, const SceGxmTransferImage &img, SceGxmTransferType type) -> int32_t {
         const int32_t stride_pixel = img.stride / sizeof(T);
