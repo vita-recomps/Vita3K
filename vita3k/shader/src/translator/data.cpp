@@ -26,6 +26,7 @@
 #include <util/log.h>
 
 #include <numeric>
+#include <vector>
 
 using namespace shader;
 using namespace usse;
@@ -520,7 +521,42 @@ bool USSETranslatorVisitor::vpck(
         source = utils::convert_to_int(m_b, m_util_funcs, source, inst.opr.dest.type, scale);
     }
 
-    store(inst.opr.dest, source, dest_mask, dest_repeat_offset);
+    // A pack into 8- or 16-bit integers with FeatureState::vpck_zero_fill (a game's choice) writes
+    // whole 32-bit registers, zeroing the lanes its mask leaves out, so a later 32-bit read of the
+    // register (an address computed with IMAD, for one) does not see bytes left from an earlier
+    // value. Killzone Mercenary's shaders hang the GPU at its first level without it; Vita3K-Plus
+    // found this (nckstwrt/Vita3K-Plus, commit 6fc25451), and noted that another game needs those
+    // lanes kept. What the hardware does is not known yet, hence a per-game choice.
+    Imm4 store_mask = dest_mask;
+    const std::size_t lane_size = get_data_type_size(inst.opr.dest.type);
+    if (m_features.vpck_zero_fill && is_integer_data_type(inst.opr.dest.type) && lane_size < 4) {
+        const int lanes_per_register = static_cast<int>(4 / lane_size);
+        Imm4 whole = 0;
+        for (int first = 0; first < 4; first += lanes_per_register) {
+            const Imm4 register_lanes = static_cast<Imm4>(((1 << lanes_per_register) - 1) << first);
+            if (dest_mask & register_lanes)
+                whole |= register_lanes;
+        }
+        if (whole != dest_mask) {
+            const spv::Id lane_type = m_b.isScalar(source) ? m_b.getTypeId(source) : m_b.getContainedTypeId(m_b.getTypeId(source));
+            const spv::Id zero = m_b.isUintType(lane_type) ? m_b.makeUintConstant(0) : m_b.makeIntConstant(0);
+            std::vector<spv::Id> lanes;
+            int next = 0;
+            for (int i = 0; i < 4; i++) {
+                if (!(whole & (1 << i)))
+                    continue;
+                if (dest_mask & (1 << i))
+                    lanes.push_back(m_b.getNumComponents(source) == 1 ? source : m_b.createCompositeExtract(source, lane_type, next++));
+                else
+                    lanes.push_back(zero);
+            }
+            source = lanes.size() == 1 ? lanes[0]
+                                       : m_b.createCompositeConstruct(utils::make_vector_or_scalar_type(m_b, lane_type, static_cast<int>(lanes.size())), lanes);
+            store_mask = whole;
+        }
+    }
+
+    store(inst.opr.dest, source, store_mask, dest_repeat_offset);
     END_REPEAT()
 
     reset_repeat_multiplier();

@@ -23,6 +23,8 @@
 
 #include "../../game-frontend/profile.h"
 
+#include <config/state.h>
+
 // provides WinMain for the windowed executable, which calls main below
 #include <SDL3/SDL_main.h>
 
@@ -59,5 +61,10 @@ int main(int argc, char *argv[]) {
     profile.name = "Killzone Mercenary";
     profile.id = "vekta-mercenary";
     profile.ini = ini_layout();
+    profile.hooks.configure = [](game_frontend::Context &, Config &cfg) {
+        // the game's shaders hang the GPU at its first level without this
+        // (shader/src/translator/data.cpp, vpck)
+        cfg.vpck_zero_fill = true;
+    };
     return game_frontend::run(profile, argc, argv);
 }

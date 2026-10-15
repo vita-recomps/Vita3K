@@ -31,6 +31,7 @@ struct FeatureState {
     bool support_scaled_attribute_formats = true; // can we pass integer to the shader and read them as floats? This is not supported on some Android GPUs
     bool use_texture_viewport = false; ///< Are we using texture viewports in the shader
     bool support_depth_clamp = false; ///< Is depth clamped per fragment by the pipeline (instead of per vertex in the shader)?
+    bool vpck_zero_fill = false; ///< Does a pack into 8- or 16-bit integers zero the lanes it leaves out of each 32-bit register? (Config::vpck_zero_fill, per game)
 
     bool is_programmable_blending_supported() const {
         return support_shader_interlock || support_texture_barrier || direct_fragcolor;

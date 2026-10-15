@@ -59,6 +59,9 @@ struct Config {
     // use the shader and pipeline caches without writing to them (ss-delta: a second copy of the
     // game beside the first); not saved in config.yml
     bool shader_cache_read_only = false;
+    // shaders: a pack into 8- or 16-bit integers zeroes the lanes it leaves out of each 32-bit
+    // register (FeatureState::vpck_zero_fill); set by a game's front end, not saved in config.yml
+    bool vpck_zero_fill = false;
 
     fs::path get_vita_fs_path() const {
         return fs_utils::utf8_to_path(vita_fs_path);
