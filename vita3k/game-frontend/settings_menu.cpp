@@ -108,6 +108,13 @@ std::string format_float(double v) {
 }
 
 std::string shown_value(const SettingsMenu::Row &row) {
+    // a choice with labels shows its label (an unset one its example's, as the default)
+    if (!row.spec.choice_labels.empty()) {
+        const std::string &value = row.value.empty() ? row.spec.value : row.value;
+        for (size_t i = 0; i < row.spec.choices.size() && i < row.spec.choice_labels.size(); i++)
+            if (row.spec.choices[i] == value)
+                return row.spec.choice_labels[i] + (row.value.empty() ? " (default)" : "");
+    }
     if (row.value.empty())
         return row.editable ? "(default)" : "(not set)";
     if (row.spec.kind == Kind::Bool)
@@ -302,12 +309,20 @@ void SettingsMenu::on_button_pressed(pad_button button, bool /*is_auto_repeat*/)
             if (selected)
                 result.add(rect(PANEL_X + 16, y, PANEL_W - 32, ROW_H - 4, SELECTED, 6).get_compiled());
             result.add(text(row.spec.title.empty() ? row_title(row.spec.key) : row.spec.title, PANEL_X + 34, y + 6, 330, 24, 16, TEXT).get_compiled());
+            // the value, shortened with "..." to fit its column (a network adapter's long name)
+            const std::string arrows_l = row.editable && selected && row.spec.kind != Kind::Bool ? "<  " : "";
+            const std::string arrows_r = (arrows_l.empty() ? "" : "  >") + std::string(row.needs_restart ? "  *" : "");
+            constexpr uint16_t VALUE_W = PANEL_W - 284;
             std::string value = shown_value(row);
-            if (row.editable && selected && row.spec.kind != Kind::Bool)
-                value = "<  " + value + "  >";
-            if (row.needs_restart)
-                value += "  *";
-            result.add(text(value, PANEL_X + 370, y + 6, PANEL_W - 404, 24, 16, row.editable ? TEXT : TEXT_DIM, overlay_element::right).get_compiled());
+            label value_label = text(arrows_l + value + arrows_r, PANEL_X + 250, y + 6, VALUE_W, 24, 16, row.editable ? TEXT : TEXT_DIM, overlay_element::right);
+            uint16_t value_w = 0, value_h = 0;
+            value_label.measure_text(value_w, value_h, true);
+            while (value_w > VALUE_W && !value.empty()) {
+                value.pop_back();
+                value_label.set_text(arrows_l + value + "..." + arrows_r);
+                value_label.measure_text(value_w, value_h, true);
+            }
+            result.add(value_label.get_compiled());
         }
         // more rows above or below
         if (m_scroll > 0)
@@ -325,11 +340,26 @@ void SettingsMenu::on_button_pressed(pad_button button, bool /*is_auto_repeat*/)
         if (!row.editable)
             help += (help.empty() ? "" : " ") + std::string("Change it in the settings file.");
     }
-    label help_label = text(help, PANEL_X + 30, HELP_Y, PANEL_W - 60, 52, 13, TEXT_DIM);
+    // the help gets the space down to the restart note or the hints; a longer one is cut at a word
+    const int16_t note_y = FOOTER_Y - 24;
+    const uint16_t help_h = static_cast<uint16_t>((any_restart ? note_y - 4 : FOOTER_Y - 6) - HELP_Y);
+    label help_label = text(help, PANEL_X + 30, HELP_Y, PANEL_W - 60, help_h, 13, TEXT_DIM);
     help_label.set_wrap_text(true);
+    uint16_t text_w = 0, text_h = 0;
+    help_label.measure_text(text_w, text_h);
+    for (std::string cut = help; text_h > help_h;) {
+        const auto space = cut.rfind(' ');
+        if (space == std::string::npos) {
+            help_label.set_text("");
+            break;
+        }
+        cut.resize(space);
+        help_label.set_text(cut + " ...");
+        help_label.measure_text(text_w, text_h);
+    }
     result.add(help_label.get_compiled());
     if (any_restart)
-        result.add(text("* takes effect the next time the game starts", PANEL_X + 30, HELP_Y + 56, PANEL_W - 60, 18, 13, ACCENT).get_compiled());
+        result.add(text("* takes effect the next time the game starts", PANEL_X + 30, note_y, PANEL_W - 60, 18, 13, ACCENT).get_compiled());
 
     result.add(text("Up/Down: choose    Left/Right, Cross: change    L1/R1 (Q/E): page    Circle (C), Esc, F1: close",
                    PANEL_X + 24, FOOTER_Y, PANEL_W - 48, 20, 12, TEXT_DIM, overlay_element::center)

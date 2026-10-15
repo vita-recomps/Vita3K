@@ -55,6 +55,27 @@ namespace layout = game_frontend::layout;
 
 constexpr const char *TITLE_ID = "PCSA00152";
 
+// [multiplayer] adapter: Vita3K's adhoc_addr, an index into this PC's network adapters with an
+// address (net_utils::get_all_assigned_addrs, the list Vita3K's own settings show). The settings
+// menu lists them as "address - name" (Vita3K's order; a long name is cut, not the address);
+// without any, it stays a number.
+SettingSpec adapter_setting() {
+    SettingSpec s{ "adapter", Kind::Int, "0", 0, 63, {},
+        "The network adapter LAN play uses (network = lan): the one in the same network as the other\n"
+        "PCs. 0 is the first of this PC's adapters with an address.",
+        true };
+    s.title = "Network adapter";
+    const auto addrs = net_utils::get_all_assigned_addrs();
+    if (!addrs.empty()) {
+        s.kind = Kind::Choice;
+        for (size_t i = 0; i < addrs.size(); i++) {
+            s.choices.push_back(std::to_string(i));
+            s.choice_labels.push_back(addrs[i].name.empty() ? addrs[i].addr : addrs[i].addr + " - " + addrs[i].name);
+        }
+    }
+    return s;
+}
+
 game_frontend::IniLayout ini_layout() {
     const std::string id = "ss-delta", exe = "ss-delta.exe";
     IniSection display{ "display", "",
@@ -90,13 +111,14 @@ game_frontend::IniLayout ini_layout() {
     IniSection multiplayer{ "multiplayer", "",
         {
             { "network", Kind::Choice, "local", 0, 0, { "local", "lan" },
-                "Ad Hoc Play (Librom, Network). Start one copy per player: ss-delta.exe is player 1, and\n"
-                "\"ss-delta.exe --player 2\" (run-player2.bat) player 2, up to 4. Each player has a Vita user and\n"
-                "saves of its own (player 1's are copied on its first start), and its log and config in\n"
-                "ss-delta/player<N>/. ss-delta-player<N>.ini next to this file overrides settings for player N.\n"
-                "local: the copies run on this PC. lan: on PCs in one network, as in Vita3K (UDP broadcasts on\n"
-                "the network adapter numbered `adapter`, 0 the first; allow ss-delta.exe through the firewall)." },
-            { "adapter", Kind::Int, "0", 0, 63, {}, "", true },
+                "Ad Hoc Play (Librom, Network). local: copies of the game on this PC play together. lan: PCs in\n"
+                "one network play together, as in Vita3K: the copies find each other by UDP broadcasts on the\n"
+                "network adapter set by `adapter` (no address to enter); allow ss-delta.exe through the firewall.\n"
+                "Start one copy per player: ss-delta.exe is player 1, and \"ss-delta.exe --player 2\"\n"
+                "(run-player2.bat) player 2, up to 4. Each player has a Vita user and saves of its own (player\n"
+                "1's are copied on its first start), and its log and config in ss-delta/player<N>/.\n"
+                "ss-delta-player<N>.ini next to this file overrides settings for player N." },
+            adapter_setting(),
             { "gamepad", Kind::Int, "0", 0, 4, {},
                 "0: every gamepad drives the window in focus. 1-4: only that gamepad, also while the window is in\n"
                 "the background (two players at one PC, a gamepad each; set it in ss-delta-player<N>.ini)." },

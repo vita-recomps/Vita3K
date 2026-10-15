@@ -50,6 +50,8 @@ struct SettingSpec {
     // hooks read its own each tick); otherwise a change takes effect at the next start
     bool live = false;
     std::string title; // the settings menu's name for it; empty: from the key ("window_scale" -> "Window scale")
+    // a Choice's names in the settings menu, one per choice (empty: the choices as written)
+    std::vector<std::string> choice_labels;
 };
 
 struct IniSection {
