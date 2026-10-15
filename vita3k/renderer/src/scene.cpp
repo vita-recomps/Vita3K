@@ -121,8 +121,15 @@ COMMAND(handle_sync_surface_data) {
         renderer.notification_ready.notify_all();
     };
 
-    if (renderer.disable_surface_sync)
-        // do it as soon as possible
+    // without surface sync, or for scenes whose results the CPU doesn't read back (surface_sync_wait),
+    // signal as soon as possible, so the game runs ahead while the GPU works
+    bool signal_early = renderer.disable_surface_sync;
+    if (!signal_early && renderer.current_backend == Backend::Vulkan && renderer.surface_sync_wait != 0) {
+        const vulkan::VKContext *context = reinterpret_cast<vulkan::VKContext *>(render_context);
+        signal_early = renderer.surface_sync_wait == 2
+            || (!context->state.surface_cache.sync_pending() && context->visibility_max_used_idx == -1);
+    }
+    if (signal_early)
         signal_notifications();
 
     if (renderer.current_backend == Backend::Vulkan) {

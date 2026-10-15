@@ -101,6 +101,10 @@ struct State {
     FeatureState features;
     float res_multiplier;
     bool disable_surface_sync;
+    // Vulkan with surface sync: which scenes signal their notifications only once the GPU has run
+    // them. 0 (exact): every scene; 1 (targeted): a scene that renders a surface the CPU reads, or
+    // uses occlusion queries; 2 (latent): none, the CPU reads the copy of an earlier frame
+    int surface_sync_wait = 0;
     bool stretch_the_display_area;
     bool fullscreen_hd_res_pixel_perfect;
     bool fullscreen = false;

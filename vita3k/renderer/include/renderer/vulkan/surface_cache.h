@@ -190,6 +190,10 @@ private:
     void destroy_surface(DepthStencilSurfaceCacheInfo &info);
 
 public:
+    // the scene being recorded renders a surface the CPU has read: it will be copied back
+    bool sync_pending() const {
+        return last_written_surface && last_written_surface->need_surface_sync && *last_written_surface->need_surface_sync;
+    }
     // when creating a mutable image, can we pass as an argument
     // the possible format used for an image view to improve performance ?
     bool support_image_format_specifier = false;

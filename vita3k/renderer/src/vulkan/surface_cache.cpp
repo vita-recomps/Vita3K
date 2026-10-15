@@ -29,6 +29,11 @@
 #include <util/log.h>
 #include <util/vector_utils.h>
 
+#include <cstdlib>
+#include <map>
+#include <mutex>
+#include <set>
+
 extern "C" {
 #include <libswscale/swscale.h>
 }
@@ -59,6 +64,20 @@ static bool format_need_additional_memory(SceGxmColorBaseFormat format) {
 
 namespace renderer::vulkan {
 
+// SSD_SYNC_TRACE=1: log what surface sync copies back and why textures miss the surface cache
+static bool sync_trace() {
+    static const bool on = std::getenv("SSD_SYNC_TRACE") != nullptr;
+    return on;
+}
+
+static void trace_once(const std::string &key, const std::string &text) {
+    static std::mutex m;
+    static std::set<std::string> seen;
+    std::lock_guard<std::mutex> lock(m);
+    if (seen.insert(key).second)
+        LOG_INFO("sync-trace: {}", text);
+}
+
 static void protect_surface(MemState &mem, ColorSurfaceCacheInfo &info) {
     const bool trap_reads = (info.tiling == SurfaceTiling::Linear
         && format_support_surface_sync(info.format));
@@ -80,11 +99,16 @@ static void protect_surface(MemState &mem, ColorSurfaceCacheInfo &info) {
     std::shared_ptr<bool> dirty = small_surface ? nullptr : info.dirty;
 
     add_protect(mem, addr_start, addr_end - addr_start, perm,
-        [dirty, need_sync](Address, bool write) {
+        [dirty, need_sync, base = info.data.address(), w = info.original_width, h = info.original_height,
+            fmt = static_cast<int>(info.format)](Address addr, bool write) {
             if (write && dirty)
                 *dirty = true;
-            if (need_sync)
+            if (need_sync) {
+                if (sync_trace() && !*need_sync)
+                    trace_once(fmt::format("trap {:x} {}", base, write), fmt::format("{} of surface {:#x} {}x{} fmt {:#x} at {:#x} arms the sync",
+                                                                              write ? "write" : "read", base, w, h, fmt, addr));
                 *need_sync = true;
+            }
             return true;
         });
 }
@@ -409,9 +433,21 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
     if (!overlap)
         return std::nullopt;
 
+    const auto miss = [&](const char *why) -> std::optional<TextureLookupResult> {
+        if (sync_trace()) {
+            const ColorSurfaceCacheInfo &si = *ite->second;
+            trace_once(fmt::format("miss {:x} {}x{} {} {:x}", address, original_width, original_height, why, ite->first),
+                fmt::format("texture {:#x} {}x{} fmt {:#x} type {:#x} misses surface {:#x} {}x{} fmt {:#x} tiling {} stride {}: {}",
+                    address, original_width, original_height, static_cast<int>(base_format), static_cast<int>(texture.texture_type()),
+                    ite->first, si.original_width, si.original_height, static_cast<int>(si.format), static_cast<int>(si.tiling),
+                    si.stride_bytes, why));
+        }
+        return std::nullopt;
+    };
+
     if (*ite->second->dirty)
         // Guest wrote to the surface backing memory since it was rendered, so GPU data is stale.
-        return std::nullopt;
+        return miss("dirty");
 
     const vk::ComponentMapping swizzle = texture::translate_swizzle(gxm::get_format(texture));
     vk::Format vk_format = color::translate_format(base_format);
@@ -458,12 +494,12 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
     if ((base_format == SCE_GXM_COLOR_BASE_FORMAT_U8U8U8 || info.format == SCE_GXM_COLOR_BASE_FORMAT_U8U8U8)
         && base_format != info.format)
         // don't even try to match u8u8u8 with something else
-        return std::nullopt;
+        return miss("u8u8u8");
 
     if (tiling != info.tiling || info.stride_bytes != stride_bytes)
         // if the tiling is different, also don't try to match them
         // about the strides, I've yet to see a case where the byte stride is different
-        return std::nullopt;
+        return miss(tiling != info.tiling ? "tiling" : "stride");
 
     // Check if we can use this surface. A linear texture ends with its last row's last pixel, not a
     // whole stride further: a tile in the right part of an atlas surface (Soul Sacrifice Delta's bloom
@@ -476,13 +512,13 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
     if (ite->first != address && !addr_in_range_of_cache)
         // persona 4 sample from the top of a texture while the bottom wasn't rendered to, the fact that both the surface and
         // the texture start at the same location should be enough
-        return std::nullopt;
+        return miss("range");
 
     uint32_t bytes_per_pixel_requested = gxm::bits_per_pixel(base_format) / 8;
     uint32_t bytes_per_pixel_in_store = gxm::bits_per_pixel(info.format) / 8;
 
     if (std::max(bytes_per_pixel_requested, bytes_per_pixel_in_store) % std::min(bytes_per_pixel_requested, bytes_per_pixel_in_store) != 0)
-        return std::nullopt;
+        return miss("bpp");
 
     // TODO: this is true only for linear textures (and also kind of for tiled textures) (and in this case start_x = 0),
     // for swizzled textures this is different
@@ -1291,6 +1327,21 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
         std::tie(buffer, offset) = state.get_matching_mapping(last_written_surface->data);
     }
     const uint32_t pixel_stride = (last_written_surface->stride_bytes * 8) / gxm::bits_per_pixel(last_written_surface->format);
+    if (sync_trace()) {
+        static std::map<uint32_t, uint64_t> counts;
+        static uint64_t total = 0;
+        counts[last_written_surface->data.address()]++;
+        if (++total % 600 == 0) {
+            std::string list;
+            for (const auto &[a, n] : counts)
+                list += fmt::format(" {:#x}x{}", a, n);
+            LOG_INFO("sync-trace: {} syncs so far:{}", total, list);
+        }
+        trace_once(fmt::format("sync {:x}", last_written_surface->data.address()),
+            fmt::format("syncing surface {:#x} {}x{} fmt {:#x} stride {} ({} x scale)", last_written_surface->data.address(),
+                last_written_surface->original_width, last_written_surface->original_height,
+                static_cast<int>(last_written_surface->format), last_written_surface->stride_bytes, state.res_multiplier));
+    }
     vk::BufferImageCopy copy{
         .bufferOffset = offset,
         .bufferRowLength = pixel_stride,

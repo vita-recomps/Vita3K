@@ -23,6 +23,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -323,8 +324,13 @@ Settings load_settings(const fs::path &dir, const std::string &id, const IniLayo
     }
     if (declared("debug.validation_layer"))
         out.validation_layer = values.get_bool("debug.validation_layer");
-    if (declared("debug.surface_sync"))
-        out.surface_sync = values.get_bool("debug.surface_sync");
+    if (declared("debug.surface_sync")) {
+        const std::array<std::string, 4> modes = { "exact", "targeted", "latent", "off" };
+        const auto v = values.get("debug.surface_sync");
+        for (int i = 0; i < static_cast<int>(modes.size()); i++)
+            if (v == modes[i])
+                out.surface_sync = i;
+    }
     if (declared("debug.high_accuracy"))
         out.high_accuracy = values.get_bool("debug.high_accuracy");
     out.keyboard = values.section("keyboard");
@@ -447,8 +453,10 @@ IniSection debug(const std::string &id) {
             { "log_level", Kind::Choice, "info", 0, 0, { "trace", "debug", "info", "warn", "error", "critical", "off" },
                 fmt::format("Log detail in {}/vita3k.log: trace, debug, info, warn, error, critical, off.", id) },
             { "validation_layer", Kind::Bool, "false", 0, 0, {}, "The Vulkan validation layer (needs the Vulkan SDK; slow)." },
-            { "surface_sync", Kind::Bool, "true", 0, 0, {},
-                "Vita3K's surface sync (effects such as haze and smoke need it). false can be faster." },
+            { "surface_sync", Kind::Choice, "exact", 0, 0, { "exact", "targeted", "latent", "off" },
+                "Vita3K's surface sync: what the game renders and then reads on the CPU is copied back.\n"
+                "exact: every scene waits for the GPU. targeted: only scenes the CPU reads back wait.\n"
+                "latent: none waits, the CPU reads a frame-old copy. off: no copy (effects may break)." },
             { "high_accuracy", Kind::Bool, "true", 0, 0, {},
                 "Vita3K's high-accuracy rendering (steady smoke). false is faster but can flicker." },
         } };

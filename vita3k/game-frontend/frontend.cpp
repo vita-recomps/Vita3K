@@ -63,6 +63,7 @@
 #include <stb_image.h>
 #include <stb_image_write.h>
 
+#include <array>
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -290,7 +291,7 @@ int run(Profile &profile, int argc, char *argv[]) {
     // [debug] surface_sync and high_accuracy, or a game's configure hook, can change them
     cfg.backend_renderer = "Vulkan";
     cfg.high_accuracy = settings.high_accuracy;
-    cfg.disable_surface_sync = !settings.surface_sync;
+    cfg.disable_surface_sync = settings.surface_sync == 3;
     cfg.memory_mapping = "double-buffer";
     // a pipeline seen for the first time is compiled in the background (its draws are skipped
     // meanwhile) and kept in the pipeline cache next to the executable; no on-screen notice
@@ -606,6 +607,9 @@ int run(Profile &profile, int argc, char *argv[]) {
             mipmaps_set = true;
             emuenv.renderer->generate_mips = settings.values.get_bool("display.mipmaps");
             LOG_INFO("generated mipmaps: {}", emuenv.renderer->generate_mips ? "on" : "off");
+            // [debug] surface_sync: which scenes wait for the GPU
+            emuenv.renderer->surface_sync_wait = settings.surface_sync < 3 ? settings.surface_sync : 0;
+            LOG_INFO("surface sync: {}", std::array<const char *, 4>{ "exact", "targeted", "latent", "off" }[settings.surface_sync]);
         }
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
             // --dump-elfs: the modules the game loaded so far are written; then quit
