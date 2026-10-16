@@ -36,6 +36,7 @@
 #include <spirv_glsl.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <list>
@@ -1496,6 +1497,19 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
 
     if (!is_float_data_type(color_val_operand.type))
         color = utils::convert_to_float(b, utils, color, color_val_operand.type, true);
+
+    // VITA3K_SANITIZE_FRAG_OUT=1: NaN and infinite components of the output colour become 0 (debugging aid; the
+    // translation changes, so the shader cache must be rebuilt for it)
+    static const bool sanitize_out = [] {
+        const char *v = std::getenv("VITA3K_SANITIZE_FRAG_OUT");
+        return v && v[0] == '1';
+    }();
+    if (sanitize_out) {
+        const spv::Id v4 = b.makeVectorType(b.makeFloatType(32), 4);
+        const spv::Id bv4 = b.makeVectorType(b.makeBoolType(), 4);
+        const spv::Id bad = b.createBinOp(spv::OpLogicalOr, bv4, b.createUnaryOp(spv::OpIsNan, bv4, color), b.createUnaryOp(spv::OpIsInf, bv4, color));
+        color = b.createTriOp(spv::OpSelect, v4, bad, utils::make_uniform_vector_from_type(b, v4, 0.0f), color);
+    }
 
     if (program.is_frag_color_used() && features.should_use_shader_interlock()) {
         spv::Id signed_i32 = b.makeIntType(32);
