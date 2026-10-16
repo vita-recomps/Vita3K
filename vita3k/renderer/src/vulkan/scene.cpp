@@ -98,6 +98,7 @@ void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *
             // we must always cover everything as some small part of the buffer may get changed only
             context.state.buffer_trapping.access_buffer(data.address(), data_size_upload, mem, false, true);
         }
+        context.state.surface_cache.trace_uniform_alias(data.address(), data_size_upload, vertex_shader, block_num);
 
         const uint64_t buffer_address = context.state.get_matching_device_address(data.address());
         if (vertex_shader && block_num == 0 && trace_this_vertex_shader(context, mem))

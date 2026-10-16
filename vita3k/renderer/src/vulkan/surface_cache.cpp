@@ -355,6 +355,16 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(Mem
     // only remember the swizzle here, it will be useful if we get to present or sample from this image with a different swizzle
     info_added.swizzle = color::translate_swizzle(color->colorFormat);
 
+    // VITA3K_TRACE_SURFACES=1: log each colour surface created (debugging aid)
+    static const bool trace_surfaces = [] {
+        const char *v = std::getenv("VITA3K_TRACE_SURFACES");
+        return v && v[0] == '1';
+    }();
+    if (trace_surfaces)
+        LOG_INFO("colour surface {} {}x{} (stride {} px) format {} type {} gamma {} -> {}, frame {}", log_hex(address), original_width,
+            original_height, color->strideInPixels, log_hex(static_cast<uint32_t>(color->colorFormat)), static_cast<int>(color->surfaceType),
+            static_cast<int>(color->gamma), vk::to_string(vk_format), context->frame_timestamp);
+
     vkutil::Image &image = info_added.texture;
     image.width = width;
     image.height = height;
@@ -528,6 +538,25 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
 
     if (static_cast<uint16_t>(start_sourced_line + height) > info.height)
         LOG_WARN_ONCE("Trying to use texture partially in the surface cache");
+
+    // VITA3K_TRACE_SURFACES=1: log (once each) the textures sampled from a colour surface and how
+    static const bool trace_hits = [] {
+        const char *v = std::getenv("VITA3K_TRACE_SURFACES");
+        return v && v[0] == '1';
+    }();
+    if (trace_hits) {
+        static std::set<std::string> seen;
+        const bool viewport = state.features.use_texture_viewport && base_format == info.format;
+        const bool copied = (start_sourced_line != 0) || (start_x != 0) || (info.width != width) || (info.height != height) || (info.format != base_format);
+        const char *how = viewport ? "viewport" : !copied ? "direct (or a copy if it is the render target)" : bytes_per_pixel_requested == bytes_per_pixel_in_store ? "copy" : "typeless copy";
+        const std::string key = fmt::format("{:x} {}x{} {:x} {:x} {:x} {}", address, original_width, original_height,
+            static_cast<uint32_t>(gxm::get_format(texture)), texture.gamma_mode, ite->first, how);
+        if (seen.insert(key).second)
+            LOG_INFO("texture {} {}x{} format {:#x} gamma {} -> {} reads colour surface {} (+{:#x}) {}x{} format {:#x} ({}), {}",
+                log_hex(address), original_width, original_height, static_cast<uint32_t>(gxm::get_format(texture)), texture.gamma_mode,
+                vk::to_string(vk_format), log_hex(ite->first), data_delta, info.original_width, info.original_height,
+                static_cast<uint32_t>(info.format), vk::to_string(info.texture.format), how);
+    }
 
     // We should be able to use this texture, so set it as mru
     color_surface_queue.set_as_mru(&info);
@@ -1246,6 +1275,30 @@ bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, Ca
         cpu_surfaces_changed.push_back(target_address);
 
     return true;
+}
+
+void VKSurfaceCache::trace_uniform_alias(Address address, uint32_t size, bool vertex_shader, int block_num) {
+    static const bool on = [] {
+        const char *v = std::getenv("VITA3K_TRACE_SURFACES");
+        return v && v[0] == '1';
+    }();
+    if (!on || size == 0)
+        return;
+    auto it = color_address_lookup.upper_bound(address + size - 1);
+    if (it == color_address_lookup.begin())
+        return;
+    --it;
+    const ColorSurfaceCacheInfo &surface = *it->second;
+    if (it->first + surface.total_bytes <= address)
+        return;
+    static std::set<std::pair<Address, Address>> seen;
+    if (!seen.insert({ address, it->first }).second)
+        return;
+    const VKContext &context = *static_cast<VKContext *>(state.context);
+    LOG_INFO("uniform alias: {} block {} at {} ({} bytes) reads colour surface {} (+{:#x}) {}x{} format {:#x}, rendered frame {}, now {}, surface sync {}",
+        vertex_shader ? "vertex" : "fragment", block_num, log_hex(address), size, log_hex(it->first), address - it->first,
+        surface.original_width, surface.original_height, static_cast<uint32_t>(surface.format), surface.last_frame_rendered,
+        context.frame_timestamp, surface.need_surface_sync && *surface.need_surface_sync);
 }
 
 ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {

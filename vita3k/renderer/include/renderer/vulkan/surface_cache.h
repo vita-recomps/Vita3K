@@ -224,6 +224,9 @@ public:
     // so that subsequent calls to check_for_surface with the target destination also get delayed
     bool check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address);
 
+    // VITA3K_TRACE_SURFACES=1: log (once per address and surface) a uniform buffer read from a colour surface's memory
+    void trace_uniform_alias(Address address, uint32_t size, bool vertex_shader, int block_num);
+
     // If non-null, the return value must be sent as a PostSurfaceSyncRequest
     ColorSurfaceCacheInfo *perform_surface_sync();
 
