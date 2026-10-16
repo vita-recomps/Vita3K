@@ -711,6 +711,22 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
 
         casted->scene_timestamp = scene_timestamp;
 
+        // the surface was written by earlier scenes (as a colour attachment, or as a storage image with shader
+        // interlock): make those writes visible to the copy, and keep later writes from starting before it reads
+        // (without this, AMD GPUs copy half-written data)
+        const vk::ImageMemoryBarrier source_barrier{
+            .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eShaderWrite,
+            .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+            .oldLayout = vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = info.texture.image,
+            .subresourceRange = vkutil::color_subresource_range
+        };
+        cmd_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eFragmentShader,
+            vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), {}, {}, source_barrier);
+
         if (bytes_per_pixel_requested == bytes_per_pixel_in_store) {
             vk::ImageCopy image_copy{
                 .srcSubresource = vkutil::color_subresource_layer,
@@ -760,7 +776,12 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
                 .setImageExtent({ width, height, 1 });
             cmd_buffer.copyBufferToImage(casted->transition_buffer.buffer, casted->texture.image, vk::ImageLayout::eTransferDstOptimal, copy_image_buffer);
         }
-        casted->texture.transition_to(cmd_buffer, vkutil::ImageLayout::ColorAttachmentReadWrite);
+        // later colour writes to the surface wait for the copy to have read it
+        cmd_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eFragmentShader, vk::DependencyFlags(), {}, {}, {});
+        // the copy is sampled by fragment shaders: StorageImage is the general layout with a barrier up to the
+        // fragment shader (ColorAttachmentReadWrite only waits at colour output, after the shader has sampled)
+        casted->texture.transition_to(cmd_buffer, vkutil::ImageLayout::StorageImage);
 
         return TextureLookupResult{
             casted->texture.view,
@@ -1448,6 +1469,22 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
     vk::Image image_to_copy = last_written_surface->texture.image;
     vk::ImageLayout image_layout = vk::ImageLayout::eGeneral;
 
+    // the render pass that just ended wrote the surface (as a colour attachment, or as a storage image with shader
+    // interlock), and its end makes nothing visible to a transfer: without this barrier, AMD GPUs copy data still in
+    // the colour caches, and the guest memory (which later scenes read through buffer device addresses) gets garbage
+    const vk::ImageMemoryBarrier before_copy{
+        .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eShaderWrite,
+        .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image_to_copy,
+        .subresourceRange = vkutil::color_subresource_range
+    };
+    cmd_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eFragmentShader,
+        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), {}, {}, before_copy);
+
     // this works for surface swizzles
     bool is_swizzle_identity = last_written_surface->swizzle.r == vk::ComponentSwizzle::eR;
     if (!is_swizzle_identity && !format_support_swizzle(last_written_surface->format)) {
@@ -1550,6 +1587,15 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
         copy.bufferOffset = 0;
         cmd_buffer.copyImageToBuffer(image_to_copy, image_layout, last_written_surface->readback_buffer->buffer, copy);
     }
+
+    // the copies must be complete and visible before anything reads the buffers (shaders through buffer device
+    // addresses, the CPU) or writes the surface again
+    const vk::MemoryBarrier after_copy{
+        .srcAccessMask = vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eTransferRead,
+        .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eHostRead
+    };
+    cmd_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands | vk::PipelineStageFlagBits::eHost,
+        vk::DependencyFlags(), after_copy, {}, {});
 
     ColorSurfaceCacheInfo *return_value = last_written_surface;
     last_written_surface = nullptr;
