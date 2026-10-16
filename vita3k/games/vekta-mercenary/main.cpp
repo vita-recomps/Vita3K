@@ -71,6 +71,9 @@ int main(int argc, char *argv[]) {
         cfg.vpck_zero_fill = true;
         // exponents and logarithms in base 2, as the hardware computes them (shader/src/translator/alu.cpp)
         cfg.exp_log_base2 = true;
+        // the box shader of its occlusion tests reads a register before writing it; AMD's compiler let
+        // the undefined value spread into the box address and every AI character was culled
+        cfg.zero_init_registers = true;
         // a PS TV: pads on the external ports, the PS TV model (SceCtrl, SceSysmem)
         cfg.pstv_mode = ctx.settings->values.get_bool("controls.pstv_mode");
     };

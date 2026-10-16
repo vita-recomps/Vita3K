@@ -976,6 +976,8 @@ void VKState::late_init(const Config &cfg, const std::string_view game_id, MemSt
     LOG_INFO_IF(features.vpck_zero_fill, "Shaders: packs into 8- and 16-bit integers zero the rest of each register");
     features.exp_log_base2 = cfg.exp_log_base2;
     LOG_INFO_IF(features.exp_log_base2, "Shaders: EXP and LOG are base 2");
+    features.zero_init_registers = cfg.zero_init_registers;
+    LOG_INFO_IF(features.zero_init_registers, "Shaders: registers start at zero");
     LOG_INFO_IF(!features.support_depth_clamp, "The GPU has no depth clamp: depth is clamped per vertex (triangles crossing the near plane can show wrong colours)");
 
 #ifdef __ANDROID__
