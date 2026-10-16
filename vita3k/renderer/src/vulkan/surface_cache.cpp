@@ -1208,7 +1208,23 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_depth_stencil_as_tex
 
     read_only.depth_view.transition_to_discard(cmd_buffer, vkutil::ImageLayout::TransferDst, vkutil::ds_subresource_range);
 
-    cached_info.texture.transition_to(cmd_buffer, vkutil::ImageLayout::TransferSrc, vkutil::ds_subresource_range);
+    // the depth was written as an attachment, in the depth-test stages: the layout transition's own barrier
+    // (from DepthStencilReadOnly) waits only for fragment shader reads, so the copy could read it before the
+    // writes land. Killzone Mercenary's soft particles then faded against a wrong depth now and then, and a
+    // large particle covered the screen at full strength (a blur sweeping over it)
+    const vk::ImageMemoryBarrier before_copy{
+        .srcAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+        .oldLayout = vkutil::get_underlying_layout(cached_info.texture.layout),
+        .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = cached_info.texture.image,
+        .subresourceRange = vkutil::ds_subresource_range
+    };
+    cmd_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests | vk::PipelineStageFlagBits::eFragmentShader,
+        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), {}, {}, before_copy);
+    cached_info.texture.layout = vkutil::ImageLayout::TransferSrc;
     vk::ImageSubresourceLayers layers = vkutil::color_subresource_layer;
     layers.aspectMask = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
     vk::ImageCopy image_copy{
@@ -1220,8 +1236,22 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_depth_stencil_as_tex
     };
     cmd_buffer.copyImage(cached_info.texture.image, vk::ImageLayout::eTransferSrcOptimal, read_only.depth_view.image, vk::ImageLayout::eTransferDstOptimal, image_copy);
 
-    // transition back
-    cached_info.texture.transition_to(cmd_buffer, vkutil::ImageLayout::DepthStencilReadOnly, vkutil::ds_subresource_range);
+    // transition back. The next pass on the surface clears, tests or writes it in the depth-test stages, which come
+    // before the fragment shader the layout transition's own barrier waits at: wait there for the copy's reads
+    const vk::ImageMemoryBarrier after_copy{
+        .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+        .dstAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eShaderRead,
+        .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+        .newLayout = vkutil::get_underlying_layout(vkutil::ImageLayout::DepthStencilReadOnly),
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = cached_info.texture.image,
+        .subresourceRange = vkutil::ds_subresource_range
+    };
+    cmd_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests | vk::PipelineStageFlagBits::eFragmentShader,
+        vk::DependencyFlags(), {}, {}, after_copy);
+    cached_info.texture.layout = vkutil::ImageLayout::DepthStencilReadOnly;
     read_only.depth_view.transition_to(cmd_buffer, vkutil::ImageLayout::SampledImage, vkutil::ds_subresource_range);
 
     return TextureLookupResult{
