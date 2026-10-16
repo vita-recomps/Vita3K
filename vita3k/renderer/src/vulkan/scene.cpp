@@ -53,7 +53,10 @@ static std::string trace_floats(const uint8_t *bytes, int count) {
     for (int i = 0; i < count; i++) {
         float f;
         std::memcpy(&f, bytes + i * 4, 4);
-        out += fmt::format("{:g} ", f);
+        uint32_t bits;
+        std::memcpy(&bits, bytes + i * 4, 4);
+        // the raw word too: registers often hold two packed halves
+        out += fmt::format("{:g} [{:08x}] ", f, bits);
     }
     return out;
 }
@@ -95,7 +98,9 @@ void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *
 
     const uint32_t data_size_upload = std::min<uint32_t>(size, program->uniform_buffer_sizes.at(block_num) * 4);
     if (context.state.features.enable_memory_mapping) {
-        if (context.state.mapping_method == MappingMethod::DoubleBuffer) {
+        // a buffer over a rendered colour surface gets the surface's image, not guest memory, which is stale
+        const bool aliases_surface = context.state.surface_cache.sync_surface_for_gpu_read(data.address(), data_size_upload);
+        if (context.state.mapping_method == MappingMethod::DoubleBuffer && !aliases_surface) {
             // we must always cover everything as some small part of the buffer may get changed only
             context.state.buffer_trapping.access_buffer(data.address(), data_size_upload, mem, false, true);
         }
@@ -665,15 +670,16 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         }
         return out;
     };
-    // VITA3K_TRACE_TARGET=<colour surface address in hex>: log (once each) the shader pairs drawing into it
+    // VITA3K_TRACE_TARGET=<colour surface address in hex>: log (once each) the shader pairs and scissors drawing into it
     static const std::string trace_target = [] {
         const char *v = std::getenv("VITA3K_TRACE_TARGET");
         return std::string(v ? v : "");
     }();
     if (!trace_target.empty() && fmt::format("{:x}", context.record.color_surface.data.address()) == trace_target) {
         static std::set<std::string> seen;
-        const std::string key = fmt::format("vs {} fs {}", hex_string(context.record.vertex_program.get(mem)->renderer_data->hash).substr(0, 16),
-            hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).substr(0, 16));
+        const std::string key = fmt::format("vs {} fs {} scissor {}x{} at {},{}", hex_string(context.record.vertex_program.get(mem)->renderer_data->hash).substr(0, 16),
+            hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).substr(0, 16), context.scissor.extent.width,
+            context.scissor.extent.height, context.scissor.offset.x, context.scissor.offset.y);
         if (seen.insert(key).second)
             LOG_INFO("target {} drawn by {}, frame {}", trace_target, key, context.frame_timestamp);
     }

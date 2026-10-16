@@ -114,6 +114,11 @@ struct ColorSurfaceCacheInfo : public SurfaceCacheInfo {
     // only for double buffer, do we need to sync the two views?
     bool need_buffer_sync = false;
 
+    // the surface is synced only for the GPU's reads of its memory (a uniform buffer over it): the
+    // mapped buffer gets the image, guest RAM does not (writing it would trip the surface's own write
+    // trap and re-upload the whole surface every frame)
+    bool gpu_read_sync_only = false;
+
     std::shared_ptr<bool> dirty = std::make_shared<bool>(false);
 
     ColorSurfaceCacheInfo() = default;
@@ -193,6 +198,10 @@ private:
     void destroy_surface(ColorSurfaceCacheInfo &info);
     void destroy_surface(DepthStencilSurfaceCacheInfo &info);
 
+    // record and submit a one-off command list copying the surface into the mapped buffer at its
+    // address (check_for_surface, sync_surface_for_gpu_read)
+    void submit_immediate_surface_sync(ColorSurfaceCacheInfo &surface);
+
 public:
     // the scene being recorded renders a surface the CPU has read: it will be copied back
     bool sync_pending() const {
@@ -225,6 +234,14 @@ public:
     // if this call is used for a copy or similar operation set the changed address to the destination
     // so that subsequent calls to check_for_surface with the target destination also get delayed
     bool check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address);
+
+    // A shader is about to read guest memory through a buffer (a uniform buffer the shader reads with
+    // memory loads; Killzone Mercenary's post-processing reads its HDR scene that way). If the range
+    // lies in a recently rendered colour surface, its image is copied into the mapped buffer first, and
+    // from then on at the end of every scene that renders it. Returns true if the range is such a
+    // surface's: the caller must then not upload the range from guest memory, which is stale.
+    // (From Vita3K-Plus, nckstwrt/Vita3K-Plus 6fc25451.)
+    bool sync_surface_for_gpu_read(Address address, uint32_t size);
 
     // VITA3K_TRACE_SURFACES=1: log (once per address and surface) a uniform buffer read from a colour surface's memory
     void trace_uniform_alias(Address address, uint32_t size, bool vertex_shader, int block_num);

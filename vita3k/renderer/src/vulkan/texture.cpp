@@ -25,6 +25,7 @@
 #include <gxm/types.h>
 #include <renderer/functions.h>
 #include <util/align.h>
+#include <util/hash.h>
 #include <util/log.h>
 #include <vkutil/vkutil.h>
 
@@ -32,6 +33,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 #include <string>
 
 namespace renderer::vulkan {
@@ -128,6 +130,21 @@ void sync_texture(VKContext &context, MemState &mem, std::size_t index, SceGxmTe
     if (!lookup_result.has_value() && is_depth_stencil_compatible_format(base_format, is_depth_surface)) {
         // Try to retrieve depth/stencil cache
         lookup_result = context.state.surface_cache.retrieve_depth_stencil_as_texture(texture, &texture_viewport);
+    }
+
+    // VITA3K_TRACE_FS_TEXTURES=<fragment shader hash prefix>: log (once each) the textures bound for its draws
+    static const std::string trace_fs = [] {
+        const char *v = std::getenv("VITA3K_TRACE_FS_TEXTURES");
+        return std::string(v ? v : "");
+    }();
+    if (!trace_fs.empty() && context.record.fragment_program
+        && hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).rfind(trace_fs, 0) == 0) {
+        static std::set<std::string> seen;
+        const std::string key = fmt::format("unit {} texture {} {}x{} format {:#x} gamma {} {}", index, log_hex(texture.data_addr << 2),
+            gxm::get_width(texture), gxm::get_height(texture), static_cast<uint32_t>(format), static_cast<uint32_t>(texture.gamma_mode),
+            lookup_result.has_value() ? "from a surface" : "from memory");
+        if (seen.insert(key).second)
+            LOG_INFO("fs {} binds {}", trace_fs, key);
     }
 
     if (lookup_result.has_value()) {

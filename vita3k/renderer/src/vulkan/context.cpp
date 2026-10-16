@@ -1,4 +1,4 @@
-// Vita3K emulator project
+﻿// Vita3K emulator project
 // Copyright (C) 2026 Vita3K team
 //
 // This program is free software; you can redistribute it and/or modify
@@ -31,6 +31,7 @@
 #include <deque>
 #include <fstream>
 #include <mutex>
+#include <string>
 
 namespace renderer::vulkan {
 
@@ -75,6 +76,29 @@ void gpu_trace_dump(const char *why) {
     }
     out.flush();
     LOG_ERROR("GPU trace written to gpu-trace.txt ({})", why);
+}
+
+// VITA3K_TRACE_ADDR=<guest address in hex>: when a surface sync copies a range holding it back to
+// guest memory, log the 16 bytes there (copies 1500 to 1559; debugging aid)
+static void trace_synced_bytes(const MemState &mem, Address location, uint32_t size) {
+    static const Address traced = [] {
+        const char *v = std::getenv("VITA3K_TRACE_ADDR");
+        return v ? static_cast<Address>(std::strtoul(v, nullptr, 16)) : 0;
+    }();
+    if (!traced || traced < location || traced + 16 > location + size)
+        return;
+    static uint32_t count = 0;
+    if (++count < 1500 || count >= 1560)
+        return;
+    const uint8_t *bytes = Ptr<const uint8_t>(traced).get(mem);
+    std::string hex;
+    for (int i = 0; i < 16; i++)
+        hex += fmt::format("{:02x}{}", bytes[i], i % 4 == 3 ? " " : "");
+    LOG_INFO("synced bytes at {} (copy {}): {}", log_hex(traced), count, hex);
+    // and the whole range copied, every 10th of those, to a file in the working folder
+    if (count % 10 == 0)
+        std::ofstream(fmt::format("synced-{:08x}-{}.bin", location, count), std::ios::binary)
+            .write(reinterpret_cast<const char *>(Ptr<const uint8_t>(location).get(mem)), size);
 }
 
 void VKContext::wait_thread_function(const MemState &mem) {
@@ -151,6 +175,7 @@ void VKContext::wait_thread_function(const MemState &mem) {
                            wait_for_fences();
                            if (request.source) {
                                memcpy(Ptr<void>(request.location).get(mem), request.source, request.size);
+                               trace_synced_bytes(mem, request.location, request.size);
                                return;
                            }
                            auto mem_it = state.mapped_memories.lower_bound(request.location);
@@ -161,6 +186,7 @@ void VKContext::wait_thread_function(const MemState &mem) {
                            uint8_t *src = reinterpret_cast<uint8_t *>(std::get<vkutil::Buffer>(mem_it->second.buffer_impl).mapped_data);
                            src += request.location - mem_it->first;
                            memcpy(Ptr<void>(request.location).get(mem), src, request.size);
+                           trace_synced_bytes(mem, request.location, request.size);
                        },
                        [&](PostSurfaceSyncRequest &request) {
                            wait_for_fences();
