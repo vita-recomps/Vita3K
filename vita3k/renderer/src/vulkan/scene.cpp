@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <set>
 #include <variant>
 
 namespace renderer::vulkan {
@@ -664,6 +665,18 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         }
         return out;
     };
+    // VITA3K_TRACE_TARGET=<colour surface address in hex>: log (once each) the shader pairs drawing into it
+    static const std::string trace_target = [] {
+        const char *v = std::getenv("VITA3K_TRACE_TARGET");
+        return std::string(v ? v : "");
+    }();
+    if (!trace_target.empty() && fmt::format("{:x}", context.record.color_surface.data.address()) == trace_target) {
+        static std::set<std::string> seen;
+        const std::string key = fmt::format("vs {} fs {}", hex_string(context.record.vertex_program.get(mem)->renderer_data->hash).substr(0, 16),
+            hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).substr(0, 16));
+        if (seen.insert(key).second)
+            LOG_INFO("target {} drawn by {}, frame {}", trace_target, key, context.frame_timestamp);
+    }
     static const std::vector<std::string> skip_fragment_shaders = parse_hash_list("VITA3K_SKIP_FRAGMENT_SHADERS");
     // VITA3K_SKIP_SHADER_PAIRS=<vertex prefix>:<fragment prefix>,...: only draws with both
     static const std::vector<std::string> skip_shader_pairs = parse_hash_list("VITA3K_SKIP_SHADER_PAIRS");

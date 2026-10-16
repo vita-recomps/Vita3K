@@ -91,6 +91,8 @@ struct ColorSurfaceCacheInfo : public SurfaceCacheInfo {
 
     // same image with a different view(swizzle) used for sampling
     vk::ImageView alternate_view = nullptr;
+    // VITA3K_WHITE_SURFACES: the same image read as opaque white (debugging aid)
+    vk::ImageView white_view = nullptr;
 
     // only used when upscaling is enabled, to downscale the image first
     std::unique_ptr<vkutil::Image> blit_image;

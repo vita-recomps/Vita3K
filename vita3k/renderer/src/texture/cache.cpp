@@ -27,8 +27,11 @@
 #include <util/log.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
+#include <set>
+#include <tuple>
 #if defined(__x86_64__) && !defined(__APPLE__)
 #include <xxh_x86dispatch.h>
 #else
@@ -340,6 +343,19 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
 
     uint32_t width = gxm::get_width(gxm_texture);
     uint32_t height = gxm::get_height(gxm_texture);
+
+    // VITA3K_TRACE_TEXTURES=1: log the first upload of each texture format, type and gamma (debugging aid)
+    static const bool trace_textures = [] {
+        const char *v = std::getenv("VITA3K_TRACE_TEXTURES");
+        return v && v[0] == '1';
+    }();
+    if (trace_textures) {
+        static std::set<std::tuple<uint32_t, uint32_t, uint32_t>> seen;
+        if (seen.insert({ static_cast<uint32_t>(fmt), static_cast<uint32_t>(gxm_texture.texture_type()), gxm_texture.gamma_mode }).second)
+            LOG_INFO("texture format {} type {:#x} gamma {}: first upload {} {}x{} mips {}", log_hex(static_cast<uint32_t>(fmt)),
+                static_cast<uint32_t>(gxm_texture.texture_type()), gxm_texture.gamma_mode, log_hex(gxm_texture.data_addr << 2), width, height,
+                gxm_texture.true_mip_count());
+    }
 
     const Ptr<uint8_t> data(gxm_texture.data_addr << 2);
     uint8_t *texture_data = data.get(mem);

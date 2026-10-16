@@ -30,6 +30,7 @@
 #include <util/vector_utils.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <set>
@@ -142,6 +143,10 @@ void VKSurfaceCache::destroy_surface(ColorSurfaceCacheInfo &info) {
     info.casted_textures.clear();
 
     destroy_queue.add(info.alternate_view);
+    if (info.white_view) {
+        destroy_queue.add(info.white_view);
+        info.white_view = nullptr;
+    }
 
     destroy_framebuffers(info.texture.view);
     destroy_queue.add_image(info.texture);
@@ -187,6 +192,10 @@ void VKSurfaceCache::cleanup() {
         if (info.alternate_view) {
             state.device.destroy(info.alternate_view);
             info.alternate_view = nullptr;
+        }
+        if (info.white_view) {
+            state.device.destroy(info.white_view);
+            info.white_view = nullptr;
         }
 
         if (info.blit_image)
@@ -458,6 +467,29 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
     if (*ite->second->dirty)
         // Guest wrote to the surface backing memory since it was rendered, so GPU data is stale.
         return miss("dirty");
+
+    // VITA3K_WHITE_SURFACES=all or a comma-separated list of surface addresses in hex (66bb2000):
+    // while the file white-textures.on exists in the working folder, textures sampled from those
+    // colour surfaces read as opaque white (debugging aid)
+    static const std::string white_surfaces = [] {
+        const char *v = std::getenv("VITA3K_WHITE_SURFACES");
+        return v ? "," + std::string(v) + "," : std::string();
+    }();
+    if (!white_surfaces.empty() && std::filesystem::exists("white-textures.on")
+        && (white_surfaces == ",all," || white_surfaces.find(fmt::format(",{:x},", ite->first)) != std::string::npos)) {
+        ColorSurfaceCacheInfo &white = *ite->second;
+        if (!white.white_view) {
+            vk::ImageViewCreateInfo view_info{
+                .image = white.texture.image,
+                .viewType = vk::ImageViewType::e2D,
+                .format = white.texture.format,
+                .components = { vk::ComponentSwizzle::eOne, vk::ComponentSwizzle::eOne, vk::ComponentSwizzle::eOne, vk::ComponentSwizzle::eOne },
+                .subresourceRange = vkutil::color_subresource_range
+            };
+            white.white_view = state.device.createImageView(view_info);
+        }
+        return TextureLookupResult{ white.white_view, white.texture.layout, white.texture.format };
+    }
 
     const vk::ComponentMapping swizzle = texture::translate_swizzle(gxm::get_format(texture));
     vk::Format vk_format = color::translate_format(base_format);

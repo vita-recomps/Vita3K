@@ -38,6 +38,7 @@
 #include <overlay/display_manager.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <mutex>
 #include <unordered_set>
 
@@ -969,6 +970,9 @@ void VKState::late_init(const Config &cfg, const std::string_view game_id, MemSt
     // depth below 0 is clamped per fragment by the pipeline rather than per vertex in the shader
     features.support_depth_clamp = static_cast<bool>(physical_device_features.depthClamp);
     features.vpck_zero_fill = cfg.vpck_zero_fill;
+    // VITA3K_VPCK_ZERO_FILL=0 or 1 overrides the game's choice (debugging aid)
+    if (const char *v = std::getenv("VITA3K_VPCK_ZERO_FILL"); v && (v[0] == '0' || v[0] == '1'))
+        features.vpck_zero_fill = v[0] == '1';
     LOG_INFO_IF(features.vpck_zero_fill, "Shaders: packs into 8- and 16-bit integers zero the rest of each register");
     features.exp_log_base2 = cfg.exp_log_base2;
     LOG_INFO_IF(features.exp_log_base2, "Shaders: EXP and LOG are base 2");

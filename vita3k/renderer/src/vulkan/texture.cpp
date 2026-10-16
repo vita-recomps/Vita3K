@@ -25,7 +25,14 @@
 #include <gxm/types.h>
 #include <renderer/functions.h>
 #include <util/align.h>
+#include <util/log.h>
 #include <vkutil/vkutil.h>
+
+#include <fmt/format.h>
+
+#include <cstdlib>
+#include <filesystem>
+#include <string>
 
 namespace renderer::vulkan {
 
@@ -371,7 +378,19 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
     const SceGxmTextureFormat format = gxm::get_format(gxm_texture);
     const SceGxmTextureBaseFormat base_format = gxm::get_base_format(format);
 
-    const vk::ComponentMapping swizzle = texture::translate_swizzle(format);
+    vk::ComponentMapping swizzle = texture::translate_swizzle(format);
+
+    // VITA3K_WHITE_TEXTURES=all or a comma-separated list of base formats as their top byte in hex
+    // (85 = UBC1, 98 = U8U8U8 ...), or a format and a width (98w64): textures of those formats configured
+    // while the file white-textures.on exists in the working folder sample as opaque white (debugging aid)
+    static const std::string white_textures = [] {
+        const char *v = std::getenv("VITA3K_WHITE_TEXTURES");
+        return v ? "," + std::string(v) + "," : std::string();
+    }();
+    if (!white_textures.empty() && std::filesystem::exists("white-textures.on")
+        && (white_textures == ",all," || white_textures.find(fmt::format(",{:02x},", static_cast<uint32_t>(base_format) >> 24)) != std::string::npos
+            || white_textures.find(fmt::format(",{:02x}w{},", static_cast<uint32_t>(base_format) >> 24, gxm::get_width(gxm_texture))) != std::string::npos))
+        swizzle = vk::ComponentMapping{ vk::ComponentSwizzle::eOne, vk::ComponentSwizzle::eOne, vk::ComponentSwizzle::eOne, vk::ComponentSwizzle::eOne };
 
     const bool is_cube = (gxm_texture.texture_type() == SCE_GXM_TEXTURE_CUBE || gxm_texture.texture_type() == SCE_GXM_TEXTURE_CUBE_ARBITRARY);
 
