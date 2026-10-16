@@ -307,6 +307,16 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(Mem
             color_address_lookup.erase(ite);
             color_surface_queue.set_as_lru(&info);
         } else {
+            // VITA3K_FORCE_SYNC=<hex address>[,...]: these colour surfaces are copied back to guest memory at the end
+            // of every scene rendering them, as if the CPU read them (debugging aid: dump them with v3kdrive memdump)
+            static const std::string force_sync = [] {
+                const char *v = std::getenv("VITA3K_FORCE_SYNC");
+                return v ? "," + std::string(v) + "," : std::string();
+            }();
+            if (!force_sync.empty() && force_sync.find(fmt::format(",{:x},", address)) != std::string::npos && info.need_surface_sync) {
+                *info.need_surface_sync = true;
+                info.gpu_read_sync_only = false;
+            }
             color_surface_queue.set_as_mru(&info);
 
             if (info.data && *info.dirty)

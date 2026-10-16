@@ -642,6 +642,20 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         context.record.cull_mode = SCE_GXM_CULL_NONE;
         context.refresh_pipeline = true;
     }
+    // VITA3K_NO_DEPTH_TEST_TARGET=<colour surface address in hex>: draws into it pass the depth test always (debugging aid)
+    static const Address no_depth_target = [] {
+        const char *v = std::getenv("VITA3K_NO_DEPTH_TEST_TARGET");
+        return v ? static_cast<Address>(std::strtoul(v, nullptr, 16)) : 0;
+    }();
+    const bool no_depth = no_depth_target && context.record.color_surface.data.address() == no_depth_target
+        && (context.record.front_depth_func != SCE_GXM_DEPTH_FUNC_ALWAYS || context.record.back_depth_func != SCE_GXM_DEPTH_FUNC_ALWAYS);
+    const SceGxmDepthFunc saved_front_depth = context.record.front_depth_func;
+    const SceGxmDepthFunc saved_back_depth = context.record.back_depth_func;
+    if (no_depth) {
+        context.record.front_depth_func = SCE_GXM_DEPTH_FUNC_ALWAYS;
+        context.record.back_depth_func = SCE_GXM_DEPTH_FUNC_ALWAYS;
+        context.refresh_pipeline = true;
+    }
 
     // do we need to check for a pipeline change?
     if (context.refresh_pipeline || type != context.last_primitive) {
@@ -655,6 +669,11 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         if (uncull) {
             // the next draw outside the query gets its own pipeline again
             context.record.cull_mode = saved_cull_mode;
+            context.refresh_pipeline = true;
+        }
+        if (no_depth) {
+            context.record.front_depth_func = saved_front_depth;
+            context.record.back_depth_func = saved_back_depth;
             context.refresh_pipeline = true;
         }
 
