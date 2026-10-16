@@ -641,6 +641,15 @@ EXPORT(int, sceIoOpenAsync) {
 
 EXPORT(SceSSize, sceIoPread, SceUID fd, void *buf, SceSize nbyte, SceOff offset) {
     TRACY_FUNC(sceIoPread, fd, buf, nbyte, offset);
+    // VITA3K_TRACE_READS=1: which guest thread reads (debugging aid)
+    static const bool trace_reads = [] {
+        const char *v = std::getenv("VITA3K_TRACE_READS");
+        return v && v[0] == '1';
+    }();
+    if (trace_reads) {
+        const auto thread = emuenv.kernel.get_thread(thread_id);
+        LOG_INFO("pread by thread {} {}", thread_id, thread ? thread->name : std::string("?"));
+    }
     auto pos = tell_file(emuenv.io, fd, export_name);
     if (pos < 0) {
         return static_cast<SceSSize>(pos);
@@ -1795,7 +1804,7 @@ EXPORT(int, sceKernelTryReceiveMsgPipe, SceUID msgpipe_id, char *recv_buf, SceSi
     if (!size)
         return size.error();
     if (*size == 0)
-        return SCE_KERNEL_ERROR_MPP_EMPTY;
+        return SCE_KERNEL_ERROR_MSG_PIPE_EMPTY;
     if (result)
         *result = *size;
     return SCE_KERNEL_OK;
@@ -1808,7 +1817,6 @@ EXPORT(int, sceKernelTryReceiveMsgPipeVector) {
 
 EXPORT(int, sceKernelTrySendMsgPipe, SceUID msgPipeId, const void *pSendBuf, SceSize sendSize, SceUInt32 waitMode, SceSize *pResult) {
     TRACY_FUNC(sceKernelTrySendMsgPipe, msgPipeId, pSendBuf, sendSize, waitMode, pResult);
-    STUBBED("");
     waitMode |= SCE_KERNEL_MSG_PIPE_MODE_DONT_WAIT;
     SceUInt32 pTimeout = 0;
     const MsgPipePtr msgpipe = emuenv.kernel.objects.find<MsgPipe>(msgPipeId);
@@ -1817,10 +1825,14 @@ EXPORT(int, sceKernelTrySendMsgPipe, SceUID msgPipeId, const void *pSendBuf, Sce
     const auto size = msgpipe->send(emuenv.kernel.get_thread(thread_id), waitMode, pSendBuf, sendSize, &pTimeout, false);
     if (!size)
         return size.error();
+    // a pipe without room: the message is not sent, and the caller is told so (it was reported as sent, and lost)
+    if (*size == 0 && sendSize != 0) {
+        LOG_WARN_ONCE("sceKernelTrySendMsgPipe: pipe full");
+        return SCE_KERNEL_ERROR_MSG_PIPE_FULL;
+    }
     if (pResult)
         *pResult = *size;
     return SCE_KERNEL_OK;
-    // return UNIMPLEMENTED();
 }
 
 EXPORT(int, sceKernelTrySendMsgPipeVector) {
