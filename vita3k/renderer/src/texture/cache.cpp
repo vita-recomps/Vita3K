@@ -21,6 +21,7 @@
 #include <renderer/texture_cache.h>
 
 #include <gxm/functions.h>
+#include <mem/functions.h>
 #include <mem/ptr.h>
 #include <util/align.h>
 #include <util/log.h>
@@ -52,6 +53,13 @@ uint64_t hash_texture_data(const SceGxmTexture &texture, uint32_t texture_size, 
     const SceGxmTextureBaseFormat base_format = gxm::get_base_format(format);
     const Ptr<const void> data(texture.data_addr << 2);
     uint64_t data_hash = 0;
+
+    // the game may have freed the texture's memory by the time its queued bind is processed
+    // (see upload_texture): don't read it then
+    if (data.address() && !is_valid_addr_range(mem, data.address(), data.address() + texture_size)) {
+        LOG_WARN_ONCE("Texture data at {} ({} bytes) is not in valid memory: not hashed", log_hex(data.address()), texture_size);
+        return 0;
+    }
 
     if (data.address()) {
         data_hash = hash_data(data.get(mem), texture_size);
@@ -435,6 +443,21 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
         }
         pixels_per_stride = align(pixels_per_stride, align_width);
         memory_height = align(memory_height, align_height);
+
+        // The bind that leads here is processed on the render thread, after the game queued it; by
+        // then the game may have freed the texture's memory (Killzone Mercenary does as a level
+        // streams), and decoding it would read unmapped memory. Upload nothing then; the texture
+        // keeps what it held. The same guard as Vita3K-Plus's (nckstwrt/Vita3K-Plus, 6fc25451).
+        {
+            const uint64_t read_bytes = static_cast<uint64_t>(pixels_per_stride) * memory_height * gxm::bits_per_pixel(base_format) / 8;
+            const uint64_t level_bytes = (static_cast<uint64_t>(align(layout_width, align_width)) * align(layout_height, align_height) >> block_shift) * block_size;
+            const Address start = (gxm_texture.data_addr << 2) + total_source_so_far;
+            const uint64_t end = start + std::max(read_bytes, level_bytes);
+            if (end > start && (end > 0xFFFFFFFFull || !is_valid_addr_range(mem, start, static_cast<Address>(end)))) {
+                LOG_WARN_ONCE("Texture data at {} ({} bytes) is not in valid memory (freed by the game?): not uploaded", log_hex(start), end - start);
+                break;
+            }
+        }
 
         // perform all needed conversions (formats not supported by modern GPUs)
         switch (base_format) {
