@@ -29,6 +29,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <variant>
 
 namespace renderer::vulkan {
@@ -76,8 +77,13 @@ static void trace_values(VKContext &context, MemState &mem, const char *what, Ad
     const uint8_t *copy = trace_gpu_copy(context.state, address, size);
     const uint8_t *guest = Ptr<uint8_t>(address).get(mem);
     const bool same = copy && std::memcmp(copy, guest, size) == 0;
-    gpu_trace(context, fmt::format("    {} at {}: game {}| gpu {}", what, log_hex(address), trace_floats(guest, floats),
-                           copy ? (same ? std::string("(same)") : trace_floats(copy, floats)) : std::string("(no copy)")));
+    const std::string line = fmt::format("    {} at {}: game {}| gpu {}", what, log_hex(address), trace_floats(guest, floats),
+        copy ? (same ? std::string("(same)") : trace_floats(copy, floats)) : std::string("(no copy)"));
+    gpu_trace(context, line);
+    // every frame's values, flushed as written (the in-memory trace keeps only the last lists)
+    static std::ofstream file("trace-vs.txt");
+    file << "frame " << context.frame_timestamp << line << '\n';
+    file.flush();
 }
 
 void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *program, const bool vertex_shader, const int block_num, const int size, Ptr<uint8_t> data) {
@@ -96,6 +102,8 @@ void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *
         const uint64_t buffer_address = context.state.get_matching_device_address(data.address());
         if (vertex_shader && block_num == 0 && trace_this_vertex_shader(context, mem))
             trace_values(context, mem, "vertex uniform block 0", data.address(), 16);
+        if (!vertex_shader && block_num == 0 && trace_this_vertex_shader(context, mem))
+            trace_values(context, mem, "fragment uniform block 0", data.address(), 4);
         if (vertex_shader) {
             context.curr_vert_ublock.set_buffer_address(block_num, buffer_address);
         } else {
@@ -438,6 +446,8 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
                     delete[] stream;
             }
 
+            if (i == 0 && trace_this_vertex_shader(context, mem))
+                trace_values(context, mem, "vertex stream 0", state.vertex_streams[0].data.address(), 12);
             state.vertex_streams[i].data = nullptr;
             state.vertex_streams[i].size = 0;
         }
@@ -702,8 +712,6 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
     }
     context.render_cmd.drawIndexed(count, instance_count, 0, 0, 0);
     if (trace_this_vertex_shader(context, mem)) {
-        if (context.record.vertex_streams[0].data)
-            trace_values(context, mem, "vertex stream 0", context.record.vertex_streams[0].data.address(), 12);
         if (format == SCE_GXM_INDEX_FORMAT_U16 && indices && is_valid_addr_range(mem, indices.address(), indices.address() + 6)) {
             const uint16_t *idx = static_cast<const uint16_t *>(indices.get(mem));
             gpu_trace(context, fmt::format("    indices {} {} {}", idx[0], idx[1], idx[2]));
