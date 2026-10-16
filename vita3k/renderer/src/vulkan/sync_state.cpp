@@ -243,6 +243,7 @@ void sync_visibility_index(VKContext &context, bool enable, uint32_t index, bool
     if (!enable) {
         if (context.is_in_query) {
             context.render_cmd.endQuery(context.current_visibility_buffer->query_pool, context.current_query_idx);
+            gpu_trace(context, fmt::format("end query {}", context.current_query_idx));
             context.is_in_query = false;
         }
 
@@ -253,6 +254,7 @@ void sync_visibility_index(VKContext &context, bool enable, uint32_t index, bool
     // do not end the query if it's the same index
     if (context.is_in_query && context.current_query_idx != index) {
         context.render_cmd.endQuery(context.current_visibility_buffer->query_pool, context.current_query_idx);
+        gpu_trace(context, fmt::format("end query {}", context.current_query_idx));
         context.is_in_query = false;
     }
     context.current_query_idx = index;

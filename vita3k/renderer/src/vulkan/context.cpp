@@ -27,7 +27,55 @@
 #include <util/log.h>
 #include <util/overloaded.h>
 
+#include <cstdlib>
+#include <deque>
+#include <fstream>
+#include <mutex>
+
 namespace renderer::vulkan {
+
+static std::mutex gpu_trace_mutex;
+static std::deque<std::vector<std::string>> gpu_trace_lists; // the last command lists submitted
+static uint64_t gpu_trace_list_count = 0;
+
+bool gpu_trace_on() {
+    static const bool on = [] {
+        const char *v = std::getenv("VITA3K_GPU_TRACE");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+
+void gpu_trace(VKContext &context, std::string entry) {
+    if (gpu_trace_on())
+        context.gpu_trace_entries.push_back(std::move(entry));
+}
+
+void gpu_trace_submitted(VKContext &context, const char *what) {
+    if (!gpu_trace_on())
+        return;
+    const std::lock_guard<std::mutex> lock(gpu_trace_mutex);
+    context.gpu_trace_entries.push_back(fmt::format("submitted ({}), list #{}", what, ++gpu_trace_list_count));
+    gpu_trace_lists.push_back(std::move(context.gpu_trace_entries));
+    context.gpu_trace_entries.clear();
+    while (gpu_trace_lists.size() > 6)
+        gpu_trace_lists.pop_front();
+}
+
+void gpu_trace_dump(const char *why) {
+    if (!gpu_trace_on())
+        return;
+    const std::lock_guard<std::mutex> lock(gpu_trace_mutex);
+    std::ofstream out("gpu-trace.txt");
+    out << "GPU trace (" << why << "): the last " << gpu_trace_lists.size() << " command lists submitted, oldest first\n";
+    for (const auto &list : gpu_trace_lists) {
+        out << "--- command list\n";
+        for (const auto &entry : list)
+            out << "  " << entry << "\n";
+    }
+    out.flush();
+    LOG_ERROR("GPU trace written to gpu-trace.txt ({})", why);
+}
 
 void VKContext::wait_thread_function(const MemState &mem) {
     // try to wait for multiple fences at the same time if possible
@@ -36,7 +84,13 @@ void VKContext::wait_thread_function(const MemState &mem) {
     auto wait_for_fences = [&]() {
         while (!fences.empty()) {
             // timeout so we can check for shutdown
-            auto result = state.device.waitForFences(fences, VK_TRUE, 100'000'000ULL);
+            vk::Result result;
+            try {
+                result = state.device.waitForFences(fences, VK_TRUE, 100'000'000ULL);
+            } catch (const vk::DeviceLostError &) {
+                gpu_trace_dump("device lost while waiting for a fence");
+                throw;
+            }
             if (result == vk::Result::eSuccess) {
                 // don't reset them
                 fences.clear();
@@ -264,6 +318,7 @@ void VKContext::start_recording(bool first_in_scene) {
     };
     render_cmd.begin(begin_info);
     prerender_cmd.begin(begin_info);
+    gpu_trace(*this, "begin command list");
 
     is_recording = true;
 
@@ -358,6 +413,7 @@ void VKContext::start_render_pass(bool create_descriptor_set) {
     };
     curr_renderpass_info.setClearValues(curr_clear_values);
     render_cmd.beginRenderPass(curr_renderpass_info, vk::SubpassContents::eInline);
+    gpu_trace(*this, fmt::format("begin render pass {}x{}", curr_renderpass_info.renderArea.extent.width, curr_renderpass_info.renderArea.extent.height));
 
     // set the renderpass info ready in case we need to switch between classic and framebuffer fetch usage
     curr_renderpass_info.setClearValues(nullptr);
@@ -400,10 +456,12 @@ void VKContext::stop_render_pass() {
     // do this before ending the render pass
     if (is_in_query) {
         render_cmd.endQuery(current_visibility_buffer->query_pool, current_query_idx);
+        gpu_trace(*this, fmt::format("end query {}", current_query_idx));
         is_in_query = false;
     }
 
     render_cmd.endRenderPass();
+    gpu_trace(*this, "end render pass");
 
     in_renderpass = false;
 }
@@ -421,36 +479,54 @@ void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNot
         uint32_t offset;
         uint32_t size;
     };
-    std::vector<VisibilityRange> occlusion_ranges;
+    // the guest memory each read-back range of query results goes to (synced after the submit)
+    struct VisibilitySync {
+        Address address;
+        uint32_t size;
+    };
+    std::vector<VisibilitySync> visibility_syncs;
     if (visibility_max_used_idx != -1) {
-        // get all the entry ranges that were used
-        bool in_range = false;
-        uint32_t range_start = 0;
-        for (uint32_t entry = 0; entry <= visibility_max_used_idx + 1; entry++) {
-            if (current_visibility_buffer->queries_used[entry] == in_range)
-                continue;
+        // Queries may have been begun in several visibility buffers during this command list (a
+        // game can switch buffers between scenes). Each buffer's queries are reset and read back
+        // from its own record: reading back queries that were never begun, with the wait flag, makes
+        // the GPU wait forever (Killzone Mercenary's later levels hung the GPU this way).
+        if (visibility_buffers_used.size() > 1)
+            LOG_WARN_ONCE("Occlusion queries in {} visibility buffers in one command list", visibility_buffers_used.size());
+        for (VisibilityBuffer *buffer : visibility_buffers_used) {
+            // get all the entry ranges that were used (queries_used has one more entry than queries)
+            std::vector<VisibilityRange> occlusion_ranges;
+            bool in_range = false;
+            uint32_t range_start = 0;
+            for (uint32_t entry = 0; entry <= static_cast<uint32_t>(buffer->max_used_idx) + 1; entry++) {
+                if (buffer->queries_used[entry] == in_range)
+                    continue;
 
-            if (in_range) {
-                occlusion_ranges.push_back({ range_start, entry - range_start });
-                in_range = false;
-            } else {
-                range_start = entry;
-                in_range = true;
+                if (in_range) {
+                    occlusion_ranges.push_back({ range_start, entry - range_start });
+                    in_range = false;
+                } else {
+                    range_start = entry;
+                    in_range = true;
+                }
             }
-        }
 
-        for (auto &range : occlusion_ranges) {
-            // reset before the beginning of the render pass
-            prerender_cmd.resetQueryPool(current_visibility_buffer->query_pool, range.offset, range.size);
+            for (auto &range : occlusion_ranges) {
+                // reset before the beginning of the render pass
+                prerender_cmd.resetQueryPool(buffer->query_pool, range.offset, range.size);
+                gpu_trace(*this, fmt::format("reset queries {}+{} (pre-render list) and read them back with wait", range.offset, range.size));
 
-            // wait for the range at the end
-            // TODO: this will be wrong with upscaling enabled and precise mode set
-            render_cmd.copyQueryPoolResults(current_visibility_buffer->query_pool, range.offset, range.size,
-                current_visibility_buffer->gpu_buffer, current_visibility_buffer->buffer_offset + range.offset * sizeof(uint32_t),
-                sizeof(uint32_t), vk::QueryResultFlagBits::eWait);
+                // wait for the range at the end
+                // TODO: this will be wrong with upscaling enabled and precise mode set
+                render_cmd.copyQueryPoolResults(buffer->query_pool, range.offset, range.size,
+                    buffer->gpu_buffer, buffer->buffer_offset + range.offset * sizeof(uint32_t),
+                    sizeof(uint32_t), vk::QueryResultFlagBits::eWait);
+                visibility_syncs.push_back({ buffer->address + range.offset * 4, range.size * 4 });
+            }
+            buffer->max_used_idx = -1;
+            buffer->queries_used.assign(buffer->size + 1, false);
         }
+        visibility_buffers_used.clear();
         visibility_max_used_idx = -1;
-        current_visibility_buffer->queries_used.assign(current_visibility_buffer->size, false);
     }
 
     ColorSurfaceCacheInfo *surface_info = nullptr;
@@ -483,6 +559,7 @@ void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNot
     vk::SubmitInfo submit_info{};
     submit_info.setCommandBuffers(cmdbuffers_to_submit);
 
+    gpu_trace_submitted(*this, "render");
     state.general_queue.submit(submit_info, fence);
     cmdbuffers_to_submit.clear();
     state.frame().rendered_fences.push_back(fence);
@@ -493,8 +570,8 @@ void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNot
 
         if (state.mapping_method == MappingMethod::DoubleBuffer) {
             // sync all the visibility buffers
-            for (auto &range : occlusion_ranges) {
-                state.request_queue.push(BufferSyncRequest{ current_visibility_buffer->address + range.offset * 4, range.size * 4 });
+            for (const VisibilitySync &sync : visibility_syncs) {
+                state.request_queue.push(BufferSyncRequest{ sync.address, sync.size });
             }
 
             // we must sync the two buffers

@@ -25,7 +25,60 @@
 
 #include <util/log.h>
 
+#include <mem/functions.h>
+
+#include <cstdlib>
+#include <cstring>
+#include <variant>
+
 namespace renderer::vulkan {
+
+// VITA3K_TRACE_VS=<vertex shader hash prefix> (with VITA3K_GPU_TRACE): for draws with that vertex
+// shader, the trace also records its uniform block 0 and the start of its vertex stream 0 and indices,
+// as the game wrote them and as the GPU-side copy holds them (double-buffer mapping)
+static bool trace_this_vertex_shader(VKContext &context, MemState &mem) {
+    static const std::string prefix = [] {
+        const char *v = std::getenv("VITA3K_TRACE_VS");
+        return std::string(v ? v : "");
+    }();
+    if (prefix.empty() || !gpu_trace_on() || !context.record.vertex_program)
+        return false;
+    return hex_string(context.record.vertex_program.get(mem)->renderer_data->hash).rfind(prefix, 0) == 0;
+}
+
+static std::string trace_floats(const uint8_t *bytes, int count) {
+    std::string out;
+    for (int i = 0; i < count; i++) {
+        float f;
+        std::memcpy(&f, bytes + i * 4, 4);
+        out += fmt::format("{:g} ", f);
+    }
+    return out;
+}
+
+// the GPU-side copy of guest memory (double-buffer mapping), or null
+static const uint8_t *trace_gpu_copy(VKState &state, Address address, uint32_t size) {
+    const auto it = state.mapped_memories.lower_bound(address);
+    if (it == state.mapped_memories.end() || it->first + it->second.size < address + size)
+        return nullptr;
+    const auto *buffer = std::get_if<vkutil::Buffer>(&it->second.buffer_impl);
+    if (!buffer || !buffer->mapped_data)
+        return nullptr;
+    return static_cast<const uint8_t *>(buffer->mapped_data) + (address - it->first);
+}
+
+static void trace_values(VKContext &context, MemState &mem, const char *what, Address address, int floats) {
+    const uint32_t size = floats * 4;
+    if (!address || !is_valid_addr_range(mem, address, address + size)) {
+        gpu_trace(context, fmt::format("    {} at {}: not valid guest memory", what, log_hex(address)));
+        return;
+    }
+    const uint8_t *copy = trace_gpu_copy(context.state, address, size);
+    const uint8_t *guest = Ptr<uint8_t>(address).get(mem);
+    const bool same = copy && std::memcmp(copy, guest, size) == 0;
+    gpu_trace(context, fmt::format("    {} at {}: game {}| gpu {}", what, log_hex(address), trace_floats(guest, floats),
+                           copy ? (same ? std::string("(same)") : trace_floats(copy, floats)) : std::string("(no copy)")));
+}
 
 void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *program, const bool vertex_shader, const int block_num, const int size, Ptr<uint8_t> data) {
     auto offset = program->uniform_buffer_data_offsets.at(block_num);
@@ -41,6 +94,8 @@ void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *
         }
 
         const uint64_t buffer_address = context.state.get_matching_device_address(data.address());
+        if (vertex_shader && block_num == 0 && trace_this_vertex_shader(context, mem))
+            trace_values(context, mem, "vertex uniform block 0", data.address(), 16);
         if (vertex_shader) {
             context.curr_vert_ublock.set_buffer_address(block_num, buffer_address);
         } else {
@@ -90,6 +145,7 @@ void mid_scene_flush(VKContext &context, const SceGxmNotification notification) 
     };
     context.render_cmd.pipelineBarrier(vk::PipelineStageFlagBits::eVertexShader, vk::PipelineStageFlagBits::eVertexInput,
         vk::DependencyFlags(), barrier, {}, {});
+    gpu_trace(context, "barrier: vertex shader writes -> vertex input");
 
     if (restart_render_pass) {
         SceGxmNotification empty_notification = { Ptr<uint32_t>(0), 0 };
@@ -423,10 +479,12 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         };
         context.render_cmd.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
             vk::DependencyFlagBits::eByRegion, {}, {}, barrier);
+        gpu_trace(context, "barrier: colour attachment -> fragment shader (framebuffer fetch)");
     } else if (context.state.features.support_shader_interlock
         && fragment_program_gxp.is_frag_color_used() != context.last_draw_was_framebuffer_fetch) {
         // restart the render pass to act as a barrier
         context.render_cmd.endRenderPass();
+        gpu_trace(context, "end render pass (interlock switch)");
 
         if (fragment_program_gxp.is_frag_color_used()) {
             context.curr_renderpass_info.framebuffer = context.current_shader_interlock_framebuffer;
@@ -437,20 +495,31 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         }
 
         context.render_cmd.beginRenderPass(context.curr_renderpass_info, vk::SubpassContents::eInline);
+        gpu_trace(context, "begin render pass (interlock switch)");
         context.last_draw_was_framebuffer_fetch = fragment_program_gxp.is_frag_color_used();
     }
 
-    if (context.current_visibility_buffer != nullptr && context.current_query_idx != -1 && !context.is_in_query) {
+    // VITA3K_NO_OCCLUSION_QUERIES=1: begin no occlusion query (to find whether queries hang the GPU);
+    // the game then reads no visibility results
+    static const bool no_occlusion_queries = [] {
+        const char *v = std::getenv("VITA3K_NO_OCCLUSION_QUERIES");
+        return v && v[0] == '1';
+    }();
+    if (!no_occlusion_queries && context.current_visibility_buffer != nullptr && context.current_query_idx != -1 && !context.is_in_query) {
         if (context.current_visibility_buffer->queries_used[context.current_query_idx]) {
             LOG_WARN_ONCE("Visibility buffer entry is used more than once in a scene");
             // still let this happen, this is a validation error but I think most GPUs should be fine with it
         }
         context.current_visibility_buffer->queries_used[context.current_query_idx] = true;
+        if (context.current_visibility_buffer->max_used_idx == -1)
+            context.visibility_buffers_used.push_back(context.current_visibility_buffer);
+        context.current_visibility_buffer->max_used_idx = std::max(context.current_visibility_buffer->max_used_idx, context.current_query_idx);
 
         context.visibility_max_used_idx = std::max(context.visibility_max_used_idx, context.current_query_idx);
 
         const vk::QueryControlFlags control_flags = (context.is_query_op_increment && context.state.physical_device_features.occlusionQueryPrecise) ? vk::QueryControlFlagBits::ePrecise : vk::QueryControlFlags();
         context.render_cmd.beginQuery(context.current_visibility_buffer->query_pool, context.current_query_idx, control_flags);
+        gpu_trace(context, fmt::format("begin query {} (buffer {})", context.current_query_idx, log_hex(context.current_visibility_buffer->address)));
         context.is_in_query = true;
     }
 
@@ -568,7 +637,82 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
     // bind the vertex streams
     bind_vertex_streams(context, mem, instance_count, max_index);
 
+    // VITA3K_SKIP_VERTEX_SHADERS=<hash prefix>,...: don't draw with these vertex shaders (to find which
+    // draws hang the GPU); the draw is still prepared and traced
+    // VITA3K_SKIP_FRAGMENT_SHADERS likewise, by fragment shader
+    static const auto parse_hash_list = [](const char *name) {
+        std::vector<std::string> out;
+        if (const char *v = std::getenv(name)) {
+            std::string all = v;
+            for (size_t start = 0; start <= all.size();) {
+                const size_t end = std::min(all.find(',', start), all.size());
+                if (end > start)
+                    out.push_back(all.substr(start, end - start));
+                start = end + 1;
+            }
+        }
+        return out;
+    };
+    static const std::vector<std::string> skip_fragment_shaders = parse_hash_list("VITA3K_SKIP_FRAGMENT_SHADERS");
+    // VITA3K_SKIP_SHADER_PAIRS=<vertex prefix>:<fragment prefix>,...: only draws with both
+    static const std::vector<std::string> skip_shader_pairs = parse_hash_list("VITA3K_SKIP_SHADER_PAIRS");
+    if (!skip_shader_pairs.empty()) {
+        const std::string vs = hex_string(context.record.vertex_program.get(mem)->renderer_data->hash);
+        const std::string fs = hex_string(context.record.fragment_program.get(mem)->renderer_data->hash);
+        for (const auto &pair : skip_shader_pairs) {
+            const size_t colon = pair.find(':');
+            if (colon == std::string::npos)
+                continue;
+            if (vs.rfind(pair.substr(0, colon), 0) == 0 && fs.rfind(pair.substr(colon + 1), 0) == 0) {
+                gpu_trace(context, fmt::format("skipped draw {} indices  vs {}  fs {}", count, vs.substr(0, 16), fs.substr(0, 16)));
+                return;
+            }
+        }
+    }
+    if (!skip_fragment_shaders.empty()) {
+        const std::string fs = hex_string(context.record.fragment_program.get(mem)->renderer_data->hash);
+        for (const auto &prefix : skip_fragment_shaders) {
+            if (fs.rfind(prefix, 0) == 0) {
+                gpu_trace(context, fmt::format("skipped draw {} indices  fs {}", count, fs.substr(0, 16)));
+                return;
+            }
+        }
+    }
+    static const std::vector<std::string> skip_vertex_shaders = [] {
+        std::vector<std::string> out;
+        if (const char *v = std::getenv("VITA3K_SKIP_VERTEX_SHADERS")) {
+            std::string all = v;
+            for (size_t start = 0; start <= all.size();) {
+                const size_t end = std::min(all.find(',', start), all.size());
+                if (end > start)
+                    out.push_back(all.substr(start, end - start));
+                start = end + 1;
+            }
+        }
+        return out;
+    }();
+    if (!skip_vertex_shaders.empty()) {
+        const std::string vs = hex_string(context.record.vertex_program.get(mem)->renderer_data->hash);
+        for (const auto &prefix : skip_vertex_shaders) {
+            if (vs.rfind(prefix, 0) == 0) {
+                gpu_trace(context, fmt::format("skipped draw {} indices  vs {}", count, vs.substr(0, 16)));
+                return;
+            }
+        }
+    }
     context.render_cmd.drawIndexed(count, instance_count, 0, 0, 0);
+    if (trace_this_vertex_shader(context, mem)) {
+        if (context.record.vertex_streams[0].data)
+            trace_values(context, mem, "vertex stream 0", context.record.vertex_streams[0].data.address(), 12);
+        if (format == SCE_GXM_INDEX_FORMAT_U16 && indices && is_valid_addr_range(mem, indices.address(), indices.address() + 6)) {
+            const uint16_t *idx = static_cast<const uint16_t *>(indices.get(mem));
+            gpu_trace(context, fmt::format("    indices {} {} {}", idx[0], idx[1], idx[2]));
+        }
+    }
+    if (gpu_trace_on())
+        gpu_trace(context, fmt::format("draw {} indices x{}  vs {}  fs {}", count, instance_count,
+                               hex_string(context.record.vertex_program.get(mem)->renderer_data->hash).substr(0, 16),
+                               hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).substr(0, 16)));
 
     context.vertex_uniform_storage_allocated = false;
     context.fragment_uniform_storage_allocated = false;

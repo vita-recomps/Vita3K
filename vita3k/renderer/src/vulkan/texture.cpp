@@ -194,6 +194,7 @@ void VKTextureCache::prepare_staging_buffer(bool is_configure) {
             // special case, all the staging buffer are occupied by the current scene
             // submit the command buffer and wait for it
             context->prerender_cmd.end();
+            gpu_trace(*context, "texture staging full: the pre-render list is submitted early and waited for");
             context->cmdbuffers_to_submit.push_back(context->prerender_cmd);
 
             vk::SubmitInfo submit_info{};

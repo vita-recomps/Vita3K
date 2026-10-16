@@ -174,7 +174,8 @@ struct VisibilityBuffer {
     uint64_t buffer_offset;
     uint32_t size;
     vk::QueryPool query_pool;
-    std::vector<bool> queries_used; // the queries that were used in the current scene
+    std::vector<bool> queries_used; // the queries that were used in the current scene (size + 1 entries)
+    int max_used_idx = -1; // the highest of them, -1 if none
 };
 
 struct FenceWaitRequest {
@@ -268,6 +269,11 @@ struct VKContext : public renderer::Context {
     std::map<Address, VisibilityBuffer> visibility_buffers;
     VisibilityBuffer *current_visibility_buffer = nullptr;
     int visibility_max_used_idx = -1;
+    // the visibility buffers with queries begun since recording started (stop_recording resets and
+    // reads back each one's own queries)
+    std::vector<VisibilityBuffer *> visibility_buffers_used;
+    // VITA3K_GPU_TRACE: what the command list being recorded holds (gpu_trace in context.cpp)
+    std::vector<std::string> gpu_trace_entries;
     bool is_in_query = false;
     int current_query_idx = -1;
     bool is_query_op_increment = false;
