@@ -37,7 +37,11 @@
 #include <util/log.h>
 #include <util/string_utils.h>
 
+#include <algorithm>
+#include <chrono>
+#include <sstream>
 #include <unordered_set>
+#include <vector>
 
 static constexpr bool LOG_UNK_NIDS_ALWAYS = false;
 
@@ -167,8 +171,39 @@ void call_import(EmuEnvState &emuenv, CPUState &cpu, uint32_t nid, SceUID thread
         return env && *env ? std::fopen(env, "w") : nullptr;
     }();
     static std::mutex trace_mutex;
+    // SSD_TRACE_IMPORTS_THREADS=<thread id>,...: only those threads, each line with the host time in ms
+    static const std::vector<SceUID> trace_threads = [] {
+        std::vector<SceUID> ids;
+        if (const char *v = std::getenv("SSD_TRACE_IMPORTS_THREADS")) {
+            std::stringstream ss(v);
+            std::string item;
+            while (std::getline(ss, item, ','))
+                ids.push_back(static_cast<SceUID>(std::strtol(item.c_str(), nullptr, 10)));
+        }
+        return ids;
+    }();
+    // SSD_TRACE_IMPORTS_NAMES=<part of a name>,...: only imports whose name contains one of them
+    static const std::vector<std::string> trace_names = [] {
+        std::vector<std::string> names;
+        if (const char *v = std::getenv("SSD_TRACE_IMPORTS_NAMES")) {
+            std::stringstream ss(v);
+            std::string item;
+            while (std::getline(ss, item, ','))
+                names.push_back(item);
+        }
+        return names;
+    }();
+    bool traced_thread = trace_threads.empty() || std::find(trace_threads.begin(), trace_threads.end(), thread_id) != trace_threads.end();
+    if (traced_thread && trace_file && !trace_names.empty()) {
+        const std::string name = import_name(nid);
+        traced_thread = std::any_of(trace_names.begin(), trace_names.end(), [&](const std::string &n) { return name.find(n) != std::string::npos; });
+    }
     const auto trace = [&](const std::string &line) {
+        if (!traced_thread)
+            return;
         const std::lock_guard<std::mutex> lock(trace_mutex);
+        if (!trace_threads.empty() || !trace_names.empty())
+            std::fputs(fmt::format("{} ", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()).c_str(), trace_file);
         std::fputs(line.c_str(), trace_file);
         std::fflush(trace_file);
     };

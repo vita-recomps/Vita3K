@@ -37,6 +37,8 @@
 #endif
 
 #include <cassert>
+#include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -411,7 +413,17 @@ int read_file(void *data, IOState &io, const SceUID fd, const SceSize size, cons
 
     const auto file = io.std_files.find(fd);
     if (file != io.std_files.end()) {
+        // VITA3K_TRACE_READS=1: log every file read (export, fd, offset, size) with its host time (debugging aid)
+        static const bool trace_reads = [] {
+            const char *v = std::getenv("VITA3K_TRACE_READS");
+            return v && v[0] == '1';
+        }();
+        const auto start = std::chrono::steady_clock::now();
+        const int64_t offset = trace_reads ? static_cast<int64_t>(file->second.tell()) : 0;
         const auto read = file->second.read(data, 1, size);
+        if (trace_reads)
+            LOG_INFO("read {} fd {} offset {:#x} size {:#x} -> {:#x} in {} us", export_name, log_hex(fd), offset, size, read,
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
         LOG_TRACE_IF(log_file_op && log_file_read, "{}: Reading {} bytes of fd {}", export_name, read, log_hex(fd));
         return static_cast<int>(read);
     }

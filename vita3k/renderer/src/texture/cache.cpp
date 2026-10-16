@@ -706,6 +706,20 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
         upload = true;
         // only hash the first mips, assume no game would modify other mips (and faces) without modifying the first one
         info->texture_size = gxm::texture_size_first_mip(gxm_texture);
+        // VITA3K_HASH_ALL_MIPS=1: hash a 2D texture's whole mip chain (debugging aid: games that stream mips in later)
+        static const bool hash_all_mips = [] {
+            const char *v = std::getenv("VITA3K_HASH_ALL_MIPS");
+            return v && v[0] == '1';
+        }();
+        const SceGxmTextureType tex_type = gxm_texture.texture_type();
+        if (hash_all_mips && gxm_texture.true_mip_count() > 1
+            && (tex_type == SCE_GXM_TEXTURE_SWIZZLED || tex_type == SCE_GXM_TEXTURE_TILED || tex_type == SCE_GXM_TEXTURE_SWIZZLED_ARBITRARY)) {
+            uint32_t mip_size = info->texture_size;
+            for (uint32_t mip = 1; mip < gxm_texture.true_mip_count(); mip++) {
+                mip_size = std::max<uint32_t>(mip_size / 4, 32);
+                info->texture_size += mip_size;
+            }
+        }
         // use the texture_repr representation, it contains everything we need and we can use it to erase the key
         // from texture_lookup later
         info->texture = std::bit_cast<SceGxmTexture>(texture_repr);

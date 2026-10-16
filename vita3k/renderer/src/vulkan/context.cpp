@@ -331,8 +331,14 @@ void set_context(VKContext &context, MemState &mem, VKRenderTarget *rt, const Fe
 
     SceGxmDepthStencilSurface *ds_surface_fin = &context.record.depth_stencil_surface;
     // if the depth-stencil buffer is not backed by memory or we don't read nor write it to memory, use the transient attachment instead
+    // VITA3K_DEPTH_KEEP_UNFORCED=1: a depth-stencil surface backed by memory but with neither force load nor force store
+    // is still kept as a surface (debugging aid: does a game read such a depth buffer as a texture?)
+    static const bool keep_unforced = [] {
+        const char *v = std::getenv("VITA3K_DEPTH_KEEP_UNFORCED");
+        return v && v[0] == '1';
+    }();
     if ((!ds_surface_fin->depth_data && !ds_surface_fin->stencil_data)
-        || (!ds_surface_fin->force_load && !ds_surface_fin->force_store)) {
+        || (!ds_surface_fin->force_load && !ds_surface_fin->force_store && !(keep_unforced && ds_surface_fin->depth_data))) {
         ds_surface_fin = nullptr;
     }
 
