@@ -29,6 +29,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -125,6 +126,19 @@ void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *
                 traced_block1_by_frame.erase(traced_block1_by_frame.begin());
         }
     }
+    // VITA3K_TRACE_FS_BLOCKS=<fragment shader hash prefix>: log its uniform blocks once each (debugging aid)
+    static const std::string trace_fs_blocks = [] {
+        const char *v = std::getenv("VITA3K_TRACE_FS_BLOCKS");
+        return std::string(v ? v : "");
+    }();
+    if (!vertex_shader && !trace_fs_blocks.empty() && context.record.fragment_program
+        && hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).rfind(trace_fs_blocks, 0) == 0) {
+        static std::set<std::string> seen;
+        const std::string key = fmt::format("{} {:x} {}", block_num, data.address(), size);
+        if (seen.insert(key).second)
+            LOG_INFO("fs {} uniform block {} at {}: game size {}, program size {} words{}", trace_fs_blocks, block_num, log_hex(data.address()), size,
+                program->uniform_buffer_sizes.at(block_num), offset == static_cast<std::uint32_t>(-1) ? " (not bound)" : "");
+    }
     if (offset == static_cast<std::uint32_t>(-1)) {
         return;
     }
@@ -134,8 +148,15 @@ void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *
         // a buffer over a rendered colour surface gets the surface's image, not guest memory, which is stale
         const bool aliases_surface = context.state.surface_cache.sync_surface_for_gpu_read(data.address(), data_size_upload);
         if (context.state.mapping_method == MappingMethod::DoubleBuffer && !aliases_surface) {
+            // VITA3K_UNSIZED_WINDOW=<KiB>: a buffer that declares no size (read only with memory loads) keeps that much
+            // of itself in sync (debugging aid)
+            static const uint32_t unsized_window = [] {
+                const char *v = std::getenv("VITA3K_UNSIZED_WINDOW");
+                return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) * 1024 : 0u;
+            }();
+            const uint32_t sync_size = (data_size_upload == 0 && unsized_window) ? unsized_window : data_size_upload;
             // we must always cover everything as some small part of the buffer may get changed only
-            context.state.buffer_trapping.access_buffer(data.address(), data_size_upload, mem, false, true);
+            context.state.buffer_trapping.access_buffer(data.address(), sync_size, mem, false, true);
         }
         context.state.surface_cache.trace_uniform_alias(data.address(), data_size_upload, vertex_shader, block_num);
 
@@ -773,7 +794,61 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
     static const std::vector<std::string> skip_fragment_shaders = parse_hash_list("VITA3K_SKIP_FRAGMENT_SHADERS");
     // VITA3K_SKIP_SHADER_PAIRS=<vertex prefix>:<fragment prefix>,...: only draws with both
     static const std::vector<std::string> skip_shader_pairs = parse_hash_list("VITA3K_SKIP_SHADER_PAIRS");
-    if (!skip_shader_pairs.empty()) {
+    // VITA3K_SKIP_TRIGGER=1: the skips above apply only while the file skip.on exists in the working folder
+    // (checked once a frame)
+    static const bool skip_trigger = [] {
+        const char *v = std::getenv("VITA3K_SKIP_TRIGGER");
+        return v && v[0] == '1';
+    }();
+    static uint64_t skip_checked_frame = ~0ull;
+    static bool skip_now = true;
+    if (skip_trigger && skip_checked_frame != context.frame_timestamp) {
+        skip_checked_frame = context.frame_timestamp;
+        const bool was = skip_now;
+        skip_now = std::filesystem::exists("skip.on");
+        if (skip_now != was)
+            LOG_INFO("skip trigger {} at frame {}", skip_now ? "on" : "off", context.frame_timestamp);
+    }
+    // VITA3K_WATCH=<hex address>:<hex size>[,...]: from frame 1800 on, log the first read and the first write of each
+    // range by anything outside the GPU (the game's CPU code, HLE, the renderer's uploads), then stop watching it
+    static bool watch_armed = false;
+    if (!watch_armed && context.frame_timestamp >= 1800) {
+        watch_armed = true;
+        if (const char *v = std::getenv("VITA3K_WATCH")) {
+            std::string list = v;
+            for (size_t start = 0; start < list.size();) {
+                const size_t end = std::min(list.find(',', start), list.size());
+                const std::string item = list.substr(start, end - start);
+                start = end + 1;
+                const size_t colon = item.find(':');
+                if (colon == std::string::npos)
+                    continue;
+                const Address watched = static_cast<Address>(std::strtoul(item.c_str(), nullptr, 16));
+                const uint32_t watched_size = static_cast<uint32_t>(std::strtoul(item.c_str() + colon + 1, nullptr, 16));
+                const uint64_t armed_frame = context.frame_timestamp;
+                add_protect(mem, watched, watched_size, MemPerm::None, [watched, armed_frame, &context](Address at, bool write) {
+                    LOG_INFO("watch {}: first {} at {} (+{:#x}), frame {} (armed at {})", log_hex(watched), write ? "WRITE" : "read", log_hex(at),
+                        at - watched, context.frame_timestamp, armed_frame);
+                    return true;
+                });
+                LOG_INFO("watching {} ({:#x} bytes) from frame {}", log_hex(watched), watched_size, armed_frame);
+            }
+        }
+    }
+    // VITA3K_TRACE_FS_FIRST=1: log each fragment shader the first time it draws, with its frame and target
+    static const bool trace_fs_first = [] {
+        const char *v = std::getenv("VITA3K_TRACE_FS_FIRST");
+        return v && v[0] == '1';
+    }();
+    if (trace_fs_first) {
+        static std::set<std::string> seen;
+        const std::string fs = hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).substr(0, 16);
+        if (seen.insert(fs).second)
+            LOG_INFO("fs first drawn: {} into {:x} {}x{} at frame {}", fs, context.record.color_surface.data.address(),
+                context.render_target->width, context.render_target->height, context.frame_timestamp);
+    }
+    const bool skips_active = !skip_trigger || skip_now;
+    if (skips_active && !skip_shader_pairs.empty()) {
         const std::string vs = hex_string(context.record.vertex_program.get(mem)->renderer_data->hash);
         const std::string fs = hex_string(context.record.fragment_program.get(mem)->renderer_data->hash);
         for (const auto &pair : skip_shader_pairs) {
@@ -786,7 +861,7 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
             }
         }
     }
-    if (!skip_fragment_shaders.empty()) {
+    if (skips_active && !skip_fragment_shaders.empty()) {
         const std::string fs = hex_string(context.record.fragment_program.get(mem)->renderer_data->hash);
         for (const auto &prefix : skip_fragment_shaders) {
             if (fs.rfind(prefix, 0) == 0) {
@@ -808,7 +883,7 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         }
         return out;
     }();
-    if (!skip_vertex_shaders.empty()) {
+    if (skips_active && !skip_vertex_shaders.empty()) {
         const std::string vs = hex_string(context.record.vertex_program.get(mem)->renderer_data->hash);
         for (const auto &prefix : skip_vertex_shaders) {
             if (vs.rfind(prefix, 0) == 0) {

@@ -30,6 +30,7 @@
 #include <util/vector_utils.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -868,6 +869,16 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_depth_stencil_for_framebuffer(Sce
     }
     cached_info->total_bytes = bytes_per_sample * depth_stencil->get_stride() * memory_height;
 
+    // VITA3K_TRACE_SURFACES=1: log each depth-stencil surface created
+    static const bool trace_ds = [] {
+        const char *v = std::getenv("VITA3K_TRACE_SURFACES");
+        return v && v[0] == '1';
+    }();
+    if (trace_ds)
+        LOG_INFO("depth surface {} (stencil {}) {}x{} stride {} samples, {} bytes, msaa {}, frame {}", log_hex(depth_stencil->depth_data.address()),
+            log_hex(depth_stencil->stencil_data.address()), memory_width, memory_height, depth_stencil->get_stride(), cached_info->total_bytes,
+            static_cast<int>(target->multisample_mode), reinterpret_cast<VKContext *>(state.context)->frame_timestamp);
+
     vkutil::Image &image = cached_info->texture;
 
     // use prerender cmd in case we read from the depth buffer (although I really doubt this could happen)
@@ -942,6 +953,27 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_depth_stencil_as_tex
         return std::nullopt;
     }
 
+    // VITA3K_TRACE_SURFACES=1: how depth-format textures are looked up (once per address, size and stride)
+    static const bool trace_depth = [] {
+        const char *v = std::getenv("VITA3K_TRACE_SURFACES");
+        return v && v[0] == '1';
+    }();
+    if (trace_depth && can_be_depth) {
+        static std::set<std::string> seen;
+        const uint32_t traced_address = texture.data_addr << 2;
+        auto nearest = depth_address_lookup.upper_bound(traced_address);
+        std::string surface = "none below";
+        if (nearest != depth_address_lookup.begin()) {
+            --nearest;
+            surface = fmt::format("{} {}x{} stride {} samples, {} bytes", log_hex(nearest->first), nearest->second->memory_width,
+                nearest->second->memory_height, nearest->second->stride_samples, nearest->second->total_bytes);
+        }
+        const std::string key = fmt::format("{:x} {}x{} {}", traced_address, memory_width, memory_height, stride_samples);
+        if (seen.insert(key).second)
+            LOG_INFO("depth texture {} {}x{} type {:#x} stride {} samples; nearest depth surface at or below: {}", log_hex(traced_address),
+                memory_width, memory_height, static_cast<uint32_t>(texture.texture_type()), stride_samples, surface);
+    }
+
     if (stride_samples % 32 != 0)
         // a depth/stencil always has a stride which is a multiple of the tile size
         return std::nullopt;
@@ -951,7 +983,17 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_depth_stencil_as_tex
     uint32_t height = static_cast<uint32_t>(memory_height * state.res_multiplier);
     uint32_t total_bytes = bytes_per_sample * stride_samples * memory_height;
 
-    const uint32_t address = texture.data_addr << 2;
+    uint32_t address = texture.data_addr << 2;
+    // VITA3K_DEPTH_ALIAS=<from>:<to> (hex): a depth texture at <from> is read from the depth surface at <to> (debugging aid)
+    static const std::pair<uint32_t, uint32_t> depth_alias = [] {
+        const char *v = std::getenv("VITA3K_DEPTH_ALIAS");
+        if (!v || !std::strchr(v, ':'))
+            return std::pair<uint32_t, uint32_t>(0, 0);
+        return std::pair<uint32_t, uint32_t>(static_cast<uint32_t>(std::strtoul(v, nullptr, 16)),
+            static_cast<uint32_t>(std::strtoul(std::strchr(v, ':') + 1, nullptr, 16)));
+    }();
+    if (depth_alias.first && address == depth_alias.first)
+        address = depth_alias.second;
     uint32_t surface_address = 0;
     DepthStencilSurfaceCacheInfo *found_info = nullptr;
 

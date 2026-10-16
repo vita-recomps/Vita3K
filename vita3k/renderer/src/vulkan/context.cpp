@@ -100,7 +100,12 @@ static void trace_synced_bytes(const MemState &mem, Address location, uint32_t s
     if (!traced || traced < location || traced + 16 > location + size)
         return;
     static uint32_t count = 0;
-    if (++count < 1500 || count >= 1560)
+    // VITA3K_TRACE_ADDR_FROM: the first copy logged (default 1500)
+    static const uint32_t from = [] {
+        const char *v = std::getenv("VITA3K_TRACE_ADDR_FROM");
+        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 1500u;
+    }();
+    if (++count < from || count >= from + 60)
         return;
     const uint8_t *bytes = Ptr<const uint8_t>(traced).get(mem);
     std::string hex;

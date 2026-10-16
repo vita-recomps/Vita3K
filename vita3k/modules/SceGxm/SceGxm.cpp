@@ -19,6 +19,7 @@
 
 #include <modules/module_parent.h>
 
+#include <set>
 #include <span>
 #include <stack>
 #if defined(__x86_64__) && !defined(__APPLE__)
@@ -1734,6 +1735,24 @@ EXPORT(int, sceGxmBeginScene, SceGxmContext *context, uint32_t flags, const SceG
     if (depthStencil) {
         depth_stencil_surface_copy = new SceGxmDepthStencilSurface;
         *depth_stencil_surface_copy = *depthStencil;
+    }
+
+    // VITA3K_TRACE_SCENES=1: log each combination of colour and depth-stencil surfaces a scene starts with (debugging aid)
+    static const bool trace_scenes = [] {
+        const char *v = std::getenv("VITA3K_TRACE_SCENES");
+        return v && v[0] == '1';
+    }();
+    if (trace_scenes) {
+        static std::set<std::string> seen;
+        const std::string key = fmt::format("{:x} {:x} {:x} {}x{}", colorSurface ? colorSurface->data.address() : 0,
+            depthStencil ? depthStencil->depth_data.address() : 0, depthStencil ? depthStencil->stencil_data.address() : 0,
+            renderTarget->width, renderTarget->height);
+        if (seen.insert(key).second)
+            LOG_INFO("scene: target {}x{}, colour {}, depth {} stencil {} force load {} store {} background depth {}, flags {:#x}",
+                renderTarget->width, renderTarget->height, log_hex(colorSurface ? colorSurface->data.address() : 0),
+                log_hex(depthStencil ? depthStencil->depth_data.address() : 0), log_hex(depthStencil ? depthStencil->stencil_data.address() : 0),
+                depthStencil ? static_cast<int>(depthStencil->force_load) : -1, depthStencil ? static_cast<int>(depthStencil->force_store) : -1,
+                depthStencil ? depthStencil->background_depth : 0.0f, flags);
     }
 
     renderer::set_context(*emuenv.renderer, context->renderer.get(), renderTarget->renderer.get(), color_surface_copy,

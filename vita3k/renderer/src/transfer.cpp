@@ -30,6 +30,9 @@
 // keywords.h must be after tracy.h for msvc compiler
 #include <util/keywords.h>
 
+#include <cstdlib>
+#include <set>
+#include <string>
 #include <vector>
 
 extern "C" {
@@ -215,12 +218,32 @@ COMMAND(handle_transfer_copy) {
         delete[] images;
     };
 
+    // VITA3K_TRACE_SURFACES=1: log each transfer copy once (debugging aid)
+    static const bool trace_copies = [] {
+        const char *v = std::getenv("VITA3K_TRACE_SURFACES");
+        return v && v[0] == '1';
+    }();
+    const auto trace_copy = [&](const char *how) {
+        if (!trace_copies)
+            return;
+        static std::set<std::string> seen;
+        const std::string key = fmt::format("{:x} {:x} {}x{} {:x}", images[0].address.address(), images[1].address.address(), images[0].width,
+            images[0].height, fmt::underlying(src_fmt));
+        if (seen.insert(key).second)
+            LOG_INFO("transfer copy {} ({}, {}) -> {} ({}, {}), {}x{} format {:#x} type {}->{}: {}", log_hex(images[0].address.address()), images[0].x,
+                images[0].y, log_hex(images[1].address.address()), images[1].x, images[1].y, images[0].width, images[0].height,
+                fmt::underlying(src_fmt), fmt::underlying(src_type), fmt::underlying(dst_type), how);
+    };
+
     if (renderer.current_backend == Backend::Vulkan && renderer.features.enable_memory_mapping && !renderer.disable_surface_sync) {
-        if (dynamic_cast<vulkan::VKState &>(renderer).surface_cache.check_for_surface(mem, images[0].address.address(), copy_operation, images[1].address.address()))
+        if (dynamic_cast<vulkan::VKState &>(renderer).surface_cache.check_for_surface(mem, images[0].address.address(), copy_operation, images[1].address.address())) {
+            trace_copy("from a colour surface (synced first)");
             // let the vulkan surface cache handle it
             return;
+        }
     }
 
+    trace_copy("from guest memory");
     copy_operation();
 }
 
