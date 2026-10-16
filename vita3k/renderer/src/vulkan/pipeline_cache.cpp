@@ -754,6 +754,17 @@ vk::PipelineVertexInputStateCreateInfo PipelineCache::get_vertex_input_state(con
             }
         }
 
+        // VITA3K_TRACE_VS=<vertex shader hash prefix>: log how its attributes are fetched (debugging aid)
+        static const std::string trace_vs = [] {
+            const char *v = std::getenv("VITA3K_TRACE_VS");
+            return std::string(v ? v : "");
+        }();
+        if (!trace_vs.empty() && hex_string(vkvert->hash).rfind(trace_vs, 0) == 0)
+            LOG_INFO("traced vertex shader: attribute reg {} (gxm format {} x{}) -> {} x{} as {}; shader: regformat {}, type {}, {} components, integer {}",
+                attribute.regIndex, static_cast<int>(attribute.format), static_cast<int>(attribute.componentCount), static_cast<int>(attribute_format),
+                static_cast<int>(component_count), vk::to_string(format), info.regformat, static_cast<int>(info.gxm_type), static_cast<int>(info.component_count),
+                info.is_integer);
+
         const VertexStreamLayout &layout = stream_layouts[attribute.streamIndex];
         const uint32_t attribute_offset = layout.repack ? layout.attributes[attribute_index].dst_offset : attribute.offset;
         for (uint32_t i = 0; i < array_size; i++) {

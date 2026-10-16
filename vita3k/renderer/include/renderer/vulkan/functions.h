@@ -27,6 +27,8 @@ namespace renderer::vulkan {
 // VITA3K_GPU_TRACE=1: note what each command list records; the last few lists submitted are written
 // to gpu-trace.txt (in the working folder) when the device is lost, to find what the GPU hung on
 bool gpu_trace_on();
+// VITA3K_TRACE_VS: the traced vertex shader's uniform block 1 address in each frame (scene.cpp)
+Address traced_block1_of_frame(uint64_t frame);
 void gpu_trace(VKContext &context, std::string entry);
 void gpu_trace_submitted(VKContext &context, const char *what);
 void gpu_trace_dump(const char *why);

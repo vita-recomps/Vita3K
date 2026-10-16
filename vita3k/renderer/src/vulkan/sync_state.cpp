@@ -223,6 +223,7 @@ void sync_visibility_buffer(VKContext &context, Ptr<uint32_t> buffer, uint32_t s
         std::tie(ite->second.gpu_buffer, ite->second.buffer_offset) = context.state.get_matching_mapping(buffer.cast<void>());
         // the + 1 is to make computing the ranges easier in context.cpp
         ite->second.queries_used.resize(ite->second.size + 1, false);
+        LOG_INFO("visibility buffer {}: stride per core {} bytes, {} queries", log_hex(buffer.address()), stride, ite->second.size);
     }
 
     context.current_visibility_buffer = &ite->second;

@@ -30,6 +30,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <set>
 #include <variant>
 
@@ -72,6 +74,13 @@ static const uint8_t *trace_gpu_copy(VKState &state, Address address, uint32_t s
     return static_cast<const uint8_t *>(buffer->mapped_data) + (address - it->first);
 }
 
+// every frame's values, flushed as written (the in-memory trace keeps only the last lists)
+static void trace_vs_line(const VKContext &context, const std::string &line) {
+    static std::ofstream file("trace-vs.txt");
+    file << "frame " << context.frame_timestamp << line << '\n';
+    file.flush();
+}
+
 static void trace_values(VKContext &context, MemState &mem, const char *what, Address address, int floats) {
     const uint32_t size = floats * 4;
     if (!address || !is_valid_addr_range(mem, address, address + size)) {
@@ -84,14 +93,38 @@ static void trace_values(VKContext &context, MemState &mem, const char *what, Ad
     const std::string line = fmt::format("    {} at {}: game {}| gpu {}", what, log_hex(address), trace_floats(guest, floats),
         copy ? (same ? std::string("(same)") : trace_floats(copy, floats)) : std::string("(no copy)"));
     gpu_trace(context, line);
-    // every frame's values, flushed as written (the in-memory trace keeps only the last lists)
-    static std::ofstream file("trace-vs.txt");
-    file << "frame " << context.frame_timestamp << line << '\n';
-    file.flush();
+    trace_vs_line(context, line);
 }
+
+// VITA3K_TRACE_VS: the traced vertex shader's uniform block 1 and the first word of its vertex stream 1
+// (Killzone Mercenary's box shader: a table of 32-byte boxes, and the object ID indexing it)
+static Address traced_vertex_block1 = 0;
+static std::mutex traced_block1_mutex;
+static std::map<uint64_t, Address> traced_block1_by_frame;
+
+Address traced_block1_of_frame(uint64_t frame) {
+    const std::lock_guard<std::mutex> lock(traced_block1_mutex);
+    const auto it = traced_block1_by_frame.find(frame);
+    return it == traced_block1_by_frame.end() ? 0 : it->second;
+}
+static uint32_t traced_object_id = 0;
 
 void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *program, const bool vertex_shader, const int block_num, const int size, Ptr<uint8_t> data) {
     auto offset = program->uniform_buffer_data_offsets.at(block_num);
+    if (vertex_shader && trace_this_vertex_shader(context, mem)) {
+        static int logged = 0;
+        if (logged++ < 40)
+            LOG_INFO("traced vertex shader: uniform block {} at {}: game size {}, program size {} words, {}", block_num, log_hex(data.address()), size,
+                program->uniform_buffer_sizes.at(block_num), offset == static_cast<std::uint32_t>(-1) ? "not bound (no offset)" : "bound");
+        if (block_num == 1)
+        {
+            traced_vertex_block1 = data.address();
+            const std::lock_guard<std::mutex> lock(traced_block1_mutex);
+            traced_block1_by_frame[context.frame_timestamp] = data.address();
+            while (traced_block1_by_frame.size() > 16)
+                traced_block1_by_frame.erase(traced_block1_by_frame.begin());
+        }
+    }
     if (offset == static_cast<std::uint32_t>(-1)) {
         return;
     }
@@ -426,6 +459,19 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
     if (max_stream_idx == 0)
         return;
 
+    if (trace_this_vertex_shader(context, mem)) {
+        static int logged = 0;
+        if (logged++ < 3) {
+            for (const SceGxmVertexAttribute &attribute : vertex_program.attributes) {
+                const SceGxmVertexStream &stream = vertex_program.streams[attribute.streamIndex];
+                LOG_INFO("traced vertex shader: attribute reg {} stream {} format {} x{} offset {}; stream stride {} index source {} repack {} (in shader: {})",
+                    attribute.regIndex, attribute.streamIndex, static_cast<int>(attribute.format), static_cast<int>(attribute.componentCount), attribute.offset,
+                    stream.stride, static_cast<int>(stream.indexSource), get_vertex_stream_layout(vertex_program, attribute.streamIndex).repack,
+                    vkvert->attribute_infos.contains(attribute.regIndex));
+            }
+        }
+    }
+
     for (int i = 0; i < max_stream_idx; i++) {
         if (state.vertex_streams[i].data) {
             // a stream that Vulkan cannot fetch in place is repacked, so it cannot stay mapped
@@ -453,8 +499,12 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
                     delete[] stream;
             }
 
-            if (i == 0 && trace_this_vertex_shader(context, mem))
-                trace_values(context, mem, "vertex stream 0", state.vertex_streams[0].data.address(), 12);
+            if (trace_this_vertex_shader(context, mem)) {
+                trace_values(context, mem, fmt::format("vertex stream {}", i).c_str(), state.vertex_streams[i].data.address(), 12);
+                const Address stream = state.vertex_streams[i].data.address();
+                if (i == 1 && stream && is_valid_addr_range(mem, stream, stream + 4))
+                    traced_object_id = *Ptr<uint32_t>(stream).get(mem);
+            }
             state.vertex_streams[i].data = nullptr;
             state.vertex_streams[i].size = 0;
         }
@@ -537,7 +587,39 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         const vk::QueryControlFlags control_flags = (context.is_query_op_increment && context.state.physical_device_features.occlusionQueryPrecise) ? vk::QueryControlFlagBits::ePrecise : vk::QueryControlFlags();
         context.render_cmd.beginQuery(context.current_visibility_buffer->query_pool, context.current_query_idx, control_flags);
         gpu_trace(context, fmt::format("begin query {} (buffer {})", context.current_query_idx, log_hex(context.current_visibility_buffer->address)));
+        // VITA3K_TRACE_QUERIES=1: the queries begun in two frames of every 600 (debugging aid)
+        static const bool trace_queries = [] {
+            const char *v = std::getenv("VITA3K_TRACE_QUERIES");
+            return v && v[0] == '1';
+        }();
+        if (trace_queries && context.frame_timestamp % 600 < 2)
+            LOG_INFO("frame {} scene {} target {:x} {}x{}: query {} in {} ({}), first draw {} indices vs {} fs {}", context.frame_timestamp,
+                context.scene_timestamp, context.record.color_surface.data.address(), context.render_target->width, context.render_target->height,
+                context.current_query_idx, log_hex(context.current_visibility_buffer->address), context.is_query_op_increment ? "increment" : "set",
+                count, hex_string(context.record.vertex_program.get(mem)->renderer_data->hash).substr(0, 16),
+                hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).substr(0, 16));
+        if (trace_queries && context.frame_timestamp % 600 < 2) {
+            const GxmRecordState &r = context.record;
+            LOG_INFO("  state: cull {} two-sided {} depth func {}/{} write {}/{} fragment program {}/{} polygon {}/{} viewport {}x{} at {},{} depth {}-{} scissor {}x{} at {},{}",
+                static_cast<int>(r.cull_mode), static_cast<int>(r.two_sided), static_cast<int>(r.front_depth_func), static_cast<int>(r.back_depth_func),
+                static_cast<int>(r.front_depth_write_mode), static_cast<int>(r.back_depth_write_mode), static_cast<int>(r.front_side_fragment_program_mode),
+                static_cast<int>(r.back_side_fragment_program_mode), static_cast<int>(r.front_polygon_mode), static_cast<int>(r.back_polygon_mode),
+                context.viewport.width, context.viewport.height, context.viewport.x, context.viewport.y, context.viewport.minDepth, context.viewport.maxDepth,
+                context.scissor.extent.width, context.scissor.extent.height, context.scissor.offset.x, context.scissor.offset.y);
+        }
         context.is_in_query = true;
+    }
+
+    // VITA3K_QUERY_NO_CULL=1: draws inside an occlusion query are not culled (debugging aid)
+    static const bool query_no_cull = [] {
+        const char *v = std::getenv("VITA3K_QUERY_NO_CULL");
+        return v && v[0] == '1';
+    }();
+    const bool uncull = query_no_cull && context.is_in_query && context.record.cull_mode != SCE_GXM_CULL_NONE;
+    const SceGxmCullMode saved_cull_mode = context.record.cull_mode;
+    if (uncull) {
+        context.record.cull_mode = SCE_GXM_CULL_NONE;
+        context.refresh_pipeline = true;
     }
 
     // do we need to check for a pipeline change?
@@ -549,6 +631,11 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
         // to be able to see anything
         bool can_be_whole_quad = instance_count == 1 && count <= 6;
         vk::Pipeline new_pipeline = context.state.pipeline_cache.retrieve_pipeline(context, type, !can_be_whole_quad, mem);
+        if (uncull) {
+            // the next draw outside the query gets its own pipeline again
+            context.record.cull_mode = saved_cull_mode;
+            context.refresh_pipeline = true;
+        }
 
         if (new_pipeline != context.current_pipeline) {
             context.current_pipeline = new_pipeline;
@@ -732,6 +819,10 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
     }
     context.render_cmd.drawIndexed(count, instance_count, 0, 0, 0);
     if (trace_this_vertex_shader(context, mem)) {
+        trace_vs_line(context, fmt::format("    draw {} indices x{}, query {} in {}, object {}", count, instance_count, context.is_in_query ? context.current_query_idx : -1,
+                                   context.current_visibility_buffer ? log_hex(context.current_visibility_buffer->address) : std::string("none"), traced_object_id & 0xFFFF));
+        if (traced_vertex_block1)
+            trace_values(context, mem, "box", traced_vertex_block1 + (traced_object_id & 0xFFFF) * 32, 8);
         if (format == SCE_GXM_INDEX_FORMAT_U16 && indices && is_valid_addr_range(mem, indices.address(), indices.address() + 6)) {
             const uint16_t *idx = static_cast<const uint16_t *>(indices.get(mem));
             gpu_trace(context, fmt::format("    indices {} {} {}", idx[0], idx[1], idx[2]));

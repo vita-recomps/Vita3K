@@ -215,6 +215,10 @@ struct BufferSyncRequest {
     uint32_t size;
     // copy from here instead of the mapped buffer (a surface sync's readback buffer)
     const uint8_t *source = nullptr;
+    // the range holds occlusion query results (a visibility buffer's)
+    bool query_results = false;
+    // the frame of the command list that wrote them (VITA3K_TRACE_QUERIES)
+    uint64_t frame = 0;
 };
 
 // A parallel thread is handling these request and telling other waiting threads

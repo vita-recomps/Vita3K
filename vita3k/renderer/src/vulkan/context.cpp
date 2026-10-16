@@ -29,9 +29,21 @@
 
 #include <cstdlib>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
+
+#ifdef _WIN32
+// GetModuleHandleA (VITA3K_RENDERDOC_FRAME)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace renderer::vulkan {
 
@@ -99,6 +111,73 @@ static void trace_synced_bytes(const MemState &mem, Address location, uint32_t s
     if (count % 10 == 0)
         std::ofstream(fmt::format("synced-{:08x}-{}.bin", location, count), std::ios::binary)
             .write(reinterpret_cast<const char *>(Ptr<const uint8_t>(location).get(mem)), size);
+}
+
+// VITA3K_QUERY_SCALE=<n>: occlusion query results written back to a visibility buffer are multiplied
+// by n (debugging aid: the fork renders multisampled targets with one sample per pixel)
+// VITA3K_TRACE_QUERIES=1: log what they hold (four in a row every 50 write-backs; debugging aid)
+// VITA3K_SHADER_DEBUG=1 (with VITA3K_TRACE_VS): a patched box shader writes, for each object ID below 128, two
+// corners (world position, clip position; corner 0 then corner 7) at its box table + 0x2000 + ID * 64. Log the
+// non-zero ones from the GPU-side copy once the frame's work is done (debugging aid).
+static void dump_shader_debug(VKState &state, uint64_t frame) {
+    static const bool on = [] {
+        const char *v = std::getenv("VITA3K_SHADER_DEBUG");
+        return v && v[0] == '1';
+    }();
+    if (!on || frame % 30 != 0)
+        return;
+    const Address table = traced_block1_of_frame(frame);
+    if (!table)
+        return;
+    const Address area = table + 0x2000;
+    const auto it = state.mapped_memories.lower_bound(area);
+    if (it == state.mapped_memories.end() || it->first + it->second.size < area + 128 * 64)
+        return;
+    const auto *buffer = std::get_if<vkutil::Buffer>(&it->second.buffer_impl);
+    if (!buffer || !buffer->mapped_data)
+        return;
+    const float *values = reinterpret_cast<const float *>(static_cast<const uint8_t *>(buffer->mapped_data) + (area - it->first));
+    for (int id = 0; id < 128; id++) {
+        const float *v = values + id * 16;
+        bool any = false;
+        for (int i = 0; i < 16; i++)
+            any |= v[i] != 0.0f;
+        if (any)
+            LOG_INFO("shader debug frame {} object {}: corner0 {} {} {} clip0 {} {} {} {} | corner7 {} {} {} clip7 {} {} {} {}", frame, id,
+                v[0], v[1], v[2], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[12], v[13], v[14], v[15]);
+    }
+}
+
+static void trace_query_results(const MemState &mem, Address location, uint32_t size, uint64_t frame) {
+    static const uint32_t scale = [] {
+        const char *v = std::getenv("VITA3K_QUERY_SCALE");
+        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    if (scale > 1) {
+        uint32_t *results = Ptr<uint32_t>(location).get(mem);
+        for (uint32_t i = 0; i < size / 4; i++)
+            results[i] *= scale;
+    }
+    static const bool on = [] {
+        const char *v = std::getenv("VITA3K_TRACE_QUERIES");
+        return v && v[0] == '1';
+    }();
+    if (!on)
+        return;
+    static uint32_t count = 0;
+    count++;
+    // every frame of 1700-2099 (the opening cutscene of contract 02), and two of every 600
+    if (!(frame >= 1700 && frame < 2100) && frame % 600 >= 2 && count % 50 >= 4)
+        return;
+    const uint32_t *words = Ptr<const uint32_t>(location).get(mem);
+    const uint32_t n = size / 4;
+    uint32_t zeros = 0;
+    std::string sample;
+    for (uint32_t i = 0; i < n; i++) {
+        zeros += words[i] == 0;
+        sample += fmt::format("{} ", words[i]);
+    }
+    LOG_INFO("query results at {} (write-back {}, frame {}): {} entries, {} zero: {}", log_hex(location), count, frame, n, zeros, sample);
 }
 
 void VKContext::wait_thread_function(const MemState &mem) {
@@ -187,6 +266,10 @@ void VKContext::wait_thread_function(const MemState &mem) {
                            src += request.location - mem_it->first;
                            memcpy(Ptr<void>(request.location).get(mem), src, request.size);
                            trace_synced_bytes(mem, request.location, request.size);
+                           if (request.query_results) {
+                               trace_query_results(mem, request.location, request.size, request.frame);
+                               dump_shader_debug(state, request.frame);
+                           }
                        },
                        [&](PostSurfaceSyncRequest &request) {
                            wait_for_fences();
@@ -546,6 +629,23 @@ void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNot
                 render_cmd.copyQueryPoolResults(buffer->query_pool, range.offset, range.size,
                     buffer->gpu_buffer, buffer->buffer_offset + range.offset * sizeof(uint32_t),
                     sizeof(uint32_t), vk::QueryResultFlagBits::eWait);
+                // VITA3K_ALL_VISIBLE=1: every query reports a large sample count, as if everything were
+                // visible (debugging aid: does occlusion culling make objects flicker?)
+                static const bool all_visible = [] {
+                    const char *v = std::getenv("VITA3K_ALL_VISIBLE");
+                    return v && v[0] == '1';
+                }();
+                if (all_visible) {
+                    const vk::BufferMemoryBarrier after_copy{
+                        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                        .buffer = buffer->gpu_buffer,
+                        .offset = buffer->buffer_offset + range.offset * sizeof(uint32_t),
+                        .size = range.size * sizeof(uint32_t)
+                    };
+                    render_cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, after_copy, {});
+                    render_cmd.fillBuffer(buffer->gpu_buffer, buffer->buffer_offset + range.offset * sizeof(uint32_t), range.size * sizeof(uint32_t), 0x00FFFFFFu);
+                }
                 visibility_syncs.push_back({ buffer->address + range.offset * 4, range.size * 4 });
             }
             buffer->max_used_idx = -1;
@@ -597,7 +697,7 @@ void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNot
         if (state.mapping_method == MappingMethod::DoubleBuffer) {
             // sync all the visibility buffers
             for (const VisibilitySync &sync : visibility_syncs) {
-                state.request_queue.push(BufferSyncRequest{ sync.address, sync.size });
+                state.request_queue.push(BufferSyncRequest{ .location = sync.address, .size = sync.size, .query_results = true, .frame = frame_timestamp });
             }
 
             // we must sync the two buffers
@@ -672,7 +772,83 @@ void VKContext::check_for_macroblock_change(bool is_draw) {
     }
 }
 
+// VITA3K_RENDERDOC_FRAME=<n>[,<count>]: with RenderDoc's Vulkan layer loaded (ENABLE_VULKAN_RENDERDOC_CAPTURE=1), capture
+// the game's frames n to n+count-1 (one capture; default count 1) into renderdoc/ in the working folder (debugging aid).
+// The minimal part of renderdoc_app.h (MIT, Baldur Karlsson) this needs:
+namespace renderdoc_api {
+typedef void(__cdecl *StartEndFrameCapture)(void *device, void *window);
+typedef void(__cdecl *SetCaptureFilePathTemplate)(const char *path_template);
+typedef int(__cdecl *GetAPI)(int version, void **api);
+typedef void(__cdecl *MaskOverlayBits)(uint32_t and_mask, uint32_t or_mask);
+// RENDERDOC_API_1_1_2's table: the functions this uses are at these indices
+constexpr int mask_overlay_bits = 8;
+constexpr int set_capture_file_path_template = 11;
+constexpr int start_frame_capture = 19;
+constexpr int end_frame_capture = 21;
+} // namespace renderdoc_api
+
+static void renderdoc_frame(uint64_t frame) {
+    static void **api = nullptr;
+    static uint64_t first = 0, count = 1;
+    // VITA3K_RENDERDOC_FRAME=file: capture the next frame each time the file renderdoc-capture.on appears in the
+    // working folder (it is removed when the capture ends)
+    static bool on_file = false;
+    static bool file_capturing = false;
+    static const bool wanted = [] {
+        const char *v = std::getenv("VITA3K_RENDERDOC_FRAME");
+        if (!v)
+            return false;
+        on_file = std::string(v) == "file";
+        first = std::strtoull(v, nullptr, 10);
+        if (const char *comma = std::strchr(v, ','))
+            count = std::max<uint64_t>(1, std::strtoull(comma + 1, nullptr, 10));
+#ifdef _WIN32
+        HMODULE module = GetModuleHandleA("renderdoc.dll");
+        if (!module) {
+            LOG_WARN("VITA3K_RENDERDOC_FRAME: RenderDoc is not loaded (set ENABLE_VULKAN_RENDERDOC_CAPTURE=1)");
+            return false;
+        }
+        auto get_api = reinterpret_cast<renderdoc_api::GetAPI>(GetProcAddress(module, "RENDERDOC_GetAPI"));
+        // eRENDERDOC_API_Version_1_1_2
+        if (!get_api || !get_api(10102, reinterpret_cast<void **>(&api)) || !api) {
+            LOG_WARN("VITA3K_RENDERDOC_FRAME: no RenderDoc API");
+            return false;
+        }
+        reinterpret_cast<renderdoc_api::SetCaptureFilePathTemplate>(api[renderdoc_api::set_capture_file_path_template])("renderdoc/vekta");
+        // no overlay: it covers the top left of the picture, where screen checks look
+        reinterpret_cast<renderdoc_api::MaskOverlayBits>(api[renderdoc_api::mask_overlay_bits])(0, 0);
+        return true;
+#else
+        return false;
+#endif
+    }();
+    if (!wanted)
+        return;
+    if (on_file) {
+        if (file_capturing) {
+            reinterpret_cast<renderdoc_api::StartEndFrameCapture>(api[renderdoc_api::end_frame_capture])(nullptr, nullptr);
+            std::error_code error;
+            std::filesystem::remove("renderdoc-capture.on", error);
+            file_capturing = false;
+            LOG_INFO("RenderDoc: capture of frame {} ended", frame - 1);
+        } else if (std::filesystem::exists("renderdoc-capture.on")) {
+            reinterpret_cast<renderdoc_api::StartEndFrameCapture>(api[renderdoc_api::start_frame_capture])(nullptr, nullptr);
+            file_capturing = true;
+            LOG_INFO("RenderDoc: capturing frame {}", frame);
+        }
+        return;
+    }
+    if (frame == first) {
+        reinterpret_cast<renderdoc_api::StartEndFrameCapture>(api[renderdoc_api::start_frame_capture])(nullptr, nullptr);
+        LOG_INFO("RenderDoc: capturing frames {} to {}", first, first + count - 1);
+    } else if (frame == first + count) {
+        reinterpret_cast<renderdoc_api::StartEndFrameCapture>(api[renderdoc_api::end_frame_capture])(nullptr, nullptr);
+        LOG_INFO("RenderDoc: capture ended");
+    }
+}
+
 void new_frame(VKContext &context) {
+    renderdoc_frame(context.frame_timestamp);
     if (context.state.features.enable_memory_mapping) {
         FrameDoneRequest request = { context.frame_timestamp };
         context.state.request_queue.push(request);
