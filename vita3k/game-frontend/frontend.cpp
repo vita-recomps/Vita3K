@@ -190,7 +190,9 @@ int run(Profile &profile, int argc, char *argv[]) {
     //   --vita-fs <folder>           the Vita file system to use instead of the settings file's
     //   --write-ini <file>           write the default settings file there and quit
     //   --player <1-4>               (games with Ad Hoc Play) a copy of the game for another player,
-    //                                with its own Vita user (saves), config and log (<id>/player<N>/)
+    //                                with its own Vita user (saves), config and log (<id>/player<N>/);
+    //                                (other games) a copy with its own window, input pipe, config
+    //                                and log, the same Vita user (for test runs in parallel)
     //   and the game's own options (its Hooks::parse_arg)
     Context ctx;
     for (int i = 1; i < argc; i++)
@@ -220,13 +222,15 @@ int run(Profile &profile, int argc, char *argv[]) {
             const fs::path path = fs_utils::utf8_to_path(ctx.args[++i]);
             fs::ofstream(path) << default_ini(profile.ini);
             return fs::exists(path) ? 0 : 1;
-        } else if (arg == "--player" && has_value && profile.multiplayer)
+        } else if (arg == "--player" && has_value)
             ctx.player = std::clamp(std::atoi(ctx.args[++i].c_str()), 1, net_utils::LOCAL_ADHOC_MAX);
         else if (!profile.hooks.parse_arg || !profile.hooks.parse_arg(ctx, ctx.args, i))
             unknown_args.push_back(arg);
     }
-    // player N is the Vita user N-1 (00 for player 1, the user every install has)
-    ctx.user_id = fmt::format("{:02}", ctx.player - 1);
+    // player N is the Vita user N-1 (00 for player 1, the user every install has). A game without Ad Hoc
+    // Play takes --player N as another copy for test drivers (runs in parallel, each started from a folder
+    // of its own): its own window, input pipe, config and log, the same Vita user
+    ctx.user_id = profile.multiplayer ? fmt::format("{:02}", ctx.player - 1) : "00";
     ctx.window_name = ctx.player == 1 ? profile.name : fmt::format("{} (player {})", profile.name, ctx.player);
     const auto fail = [&](const std::string &message) {
         LOG_ERROR("{}", message);
@@ -388,7 +392,7 @@ int run(Profile &profile, int argc, char *argv[]) {
         return 1;
     }
     app::load_users(emuenv);
-    if (ctx.player > 1) {
+    if (ctx.player > 1 && profile.multiplayer) {
         // users 01, 02 ... in order, so that player N's is N-1
         for (int p = 2; p <= ctx.player; p++) {
             const std::string id = fmt::format("{:02}", p - 1);
