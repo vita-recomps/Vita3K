@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <list>
@@ -1993,6 +1994,49 @@ static SpirvCode convert_gxp_to_spirv_impl(const SceGxmProgram &program, const s
     }
 
     b.dump(spirv);
+
+    // Debugging aids (the shader cache must be rebuilt for them):
+    // VITA3K_NO_RELAXED=1 drops every RelaxedPrecision decoration, so drivers that honour it (AMD: 16-bit
+    // math) compute in 32 bits; VITA3K_NAN_MINMAX=1 turns FMin/FMax/FClamp into NMin/NMax/NClamp, which
+    // return the operand that is not NaN.
+    static const bool no_relaxed = [] {
+        const char *v = std::getenv("VITA3K_NO_RELAXED");
+        return v && v[0] == '1';
+    }();
+    static const bool nan_minmax = [] {
+        const char *v = std::getenv("VITA3K_NAN_MINMAX");
+        return v && v[0] == '1';
+    }();
+    if (no_relaxed || nan_minmax) {
+        SpirvCode out(spirv.begin(), spirv.begin() + 5);
+        uint32_t glsl_set = 0;
+        for (size_t i = 5; i < spirv.size();) {
+            const uint32_t count = spirv[i] >> 16;
+            const uint32_t op = spirv[i] & 0xFFFF;
+            if (count == 0)
+                break;
+            bool keep = true;
+            if (op == spv::OpExtInstImport && std::strcmp(reinterpret_cast<const char *>(&spirv[i + 2]), "GLSL.std.450") == 0)
+                glsl_set = spirv[i + 1];
+            if (no_relaxed && op == spv::OpDecorate && count == 3 && spirv[i + 2] == spv::DecorationRelaxedPrecision)
+                keep = false;
+            if (no_relaxed && op == spv::OpMemberDecorate && count == 4 && spirv[i + 3] == spv::DecorationRelaxedPrecision)
+                keep = false;
+            if (keep)
+                out.insert(out.end(), spirv.begin() + i, spirv.begin() + i + count);
+            if (nan_minmax && op == spv::OpExtInst && spirv[i + 3] == glsl_set) {
+                uint32_t &inst = out[out.size() - count + 4];
+                if (inst == GLSLstd450FMin)
+                    inst = GLSLstd450NMin;
+                else if (inst == GLSLstd450FMax)
+                    inst = GLSLstd450NMax;
+                else if (inst == GLSLstd450FClamp)
+                    inst = GLSLstd450NClamp;
+            }
+            i += count;
+        }
+        spirv = std::move(out);
+    }
 
     if (LOG_SHADER_CODE || force_shader_debug) {
         std::string spirv_dump;
