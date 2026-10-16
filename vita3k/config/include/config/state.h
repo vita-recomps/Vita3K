@@ -62,6 +62,9 @@ struct Config {
     // shaders: a pack into 8- or 16-bit integers zeroes the lanes it leaves out of each 32-bit
     // register (FeatureState::vpck_zero_fill); set by a game's front end, not saved in config.yml
     bool vpck_zero_fill = false;
+    // shaders: the USSE's EXP and LOG are base 2, as on the hardware, rather than base e
+    // (FeatureState::exp_log_base2); set by a game's front end, not saved in config.yml
+    bool exp_log_base2 = false;
 
     fs::path get_vita_fs_path() const {
         return fs_utils::utf8_to_path(vita_fs_path);

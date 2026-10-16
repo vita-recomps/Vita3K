@@ -69,6 +69,8 @@ int main(int argc, char *argv[]) {
         // the game's shaders hang the GPU at its first level without this
         // (shader/src/translator/data.cpp, vpck)
         cfg.vpck_zero_fill = true;
+        // exponents and logarithms in base 2, as the hardware computes them (shader/src/translator/alu.cpp)
+        cfg.exp_log_base2 = true;
         // a PS TV: pads on the external ports, the PS TV model (SceCtrl, SceSysmem)
         cfg.pstv_mode = ctx.settings->values.get_bool("controls.pstv_mode");
     };
