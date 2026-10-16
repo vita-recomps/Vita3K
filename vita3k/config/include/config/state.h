@@ -69,6 +69,10 @@ struct Config {
     // SPIR-V, and a GPU compiler may let that spread into what is computed from it
     // (FeatureState::zero_init_registers); set by a game's front end, not saved in config.yml
     bool zero_init_registers = false;
+    // depth: a scene that doesn't store its depth-stencil surface (force store off) leaves it as it was, as
+    // on the hardware, where only a store writes it to memory (FeatureState::depth_store_scenes); set by a
+    // game's front end, not saved in config.yml
+    bool depth_store_scenes = false;
 
     fs::path get_vita_fs_path() const {
         return fs_utils::utf8_to_path(vita_fs_path);

@@ -34,6 +34,7 @@ struct FeatureState {
     bool vpck_zero_fill = false; ///< Does a pack into 8- or 16-bit integers zero the lanes it leaves out of each 32-bit register? (Config::vpck_zero_fill, per game)
     bool exp_log_base2 = false; ///< Are the USSE's EXP and LOG base 2, as on the hardware, rather than base e? (Config::exp_log_base2, per game)
     bool zero_init_registers = false; ///< Do the shaders' register banks start at zero instead of undefined? (Config::zero_init_registers, per game)
+    bool depth_store_scenes = false; ///< Does a scene that doesn't store its depth-stencil surface leave it unchanged? (Config::depth_store_scenes, per game)
 
     bool is_programmable_blending_supported() const {
         return support_shader_interlock || support_texture_barrier || direct_fragcolor;

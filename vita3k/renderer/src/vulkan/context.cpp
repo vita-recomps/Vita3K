@@ -357,6 +357,11 @@ void set_context(VKContext &context, MemState &mem, VKRenderTarget *rt, const Fe
         context.current_shader_interlock_pass = context.state.pipeline_cache.retrieve_render_pass(vk_format, true, true, color_surface_fin == nullptr, true);
 
     Framebuffer &framebuffer = state.surface_cache.retrieve_framebuffer_handle(mem, color_surface_fin, ds_surface_fin, context.current_render_pass, context.current_shader_interlock_pass, context.current_color_view, context.current_ds_view);
+    // a scene that loads its depth-stencil surface but doesn't store it leaves it as it was (FeatureState::depth_store_scenes)
+    context.scene_depth_restore.reset();
+    if (context.state.features.depth_store_scenes && ds_surface_fin && ds_surface_fin->force_load && !ds_surface_fin->force_store
+        && state.surface_cache.backup_scene_depth_stencil(context.prerender_cmd, *ds_surface_fin))
+        context.scene_depth_restore = *ds_surface_fin;
     context.current_framebuffer = framebuffer.standard;
     context.current_shader_interlock_framebuffer = framebuffer.shader_interlock;
     context.current_color_base_image = framebuffer.base_image;
@@ -375,6 +380,15 @@ void set_context(VKContext &context, MemState &mem, VKRenderTarget *rt, const Fe
     context.last_macroblock_y = ~0;
     context.ignore_macroblock = false;
     context.drawn_since_macroblock_split = false;
+}
+
+void VKContext::restore_scene_depth() {
+    if (!scene_depth_restore || !is_recording)
+        return;
+    if (in_renderpass)
+        stop_render_pass();
+    state.surface_cache.restore_scene_depth_stencil(render_cmd, *scene_depth_restore);
+    scene_depth_restore.reset();
 }
 
 void VKContext::start_recording(bool first_in_scene) {

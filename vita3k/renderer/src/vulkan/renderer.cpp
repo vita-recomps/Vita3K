@@ -38,8 +38,15 @@
 #include <overlay/display_manager.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <filesystem>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <unordered_set>
 
 #ifdef __APPLE__
@@ -978,6 +985,11 @@ void VKState::late_init(const Config &cfg, const std::string_view game_id, MemSt
     LOG_INFO_IF(features.exp_log_base2, "Shaders: EXP and LOG are base 2");
     features.zero_init_registers = cfg.zero_init_registers;
     LOG_INFO_IF(features.zero_init_registers, "Shaders: registers start at zero");
+    features.depth_store_scenes = cfg.depth_store_scenes;
+    // VITA3K_DEPTH_STORE_SCENES=0 or 1 overrides the game's choice (debugging aid)
+    if (const char *v = std::getenv("VITA3K_DEPTH_STORE_SCENES"); v && (v[0] == '0' || v[0] == '1'))
+        features.depth_store_scenes = v[0] == '1';
+    LOG_INFO_IF(features.depth_store_scenes, "Depth: scenes that don't store their depth-stencil surface leave it unchanged");
     LOG_INFO_IF(!features.support_depth_clamp, "The GPU has no depth clamp: depth is clamped per vertex (triangles crossing the near plane can show wrong colours)");
 
 #ifdef __ANDROID__
@@ -1104,6 +1116,34 @@ void VKState::cleanup() {
     render_abort = false;
 }
 
+// VITA3K_DISPLAY_SURFACE=<address in hex>,<width>,<height>: show (and record) that RGBA8 colour surface in place of
+// the game's frame, raw, while the file display-surface.on exists in the working folder (debugging aid: watch an
+// intermediate target while the game runs)
+static void display_surface_override(DisplayFrameInfo &frame) {
+    static const std::array<uint32_t, 3> surface = [] {
+        std::array<uint32_t, 3> v{};
+        if (const char *s = std::getenv("VITA3K_DISPLAY_SURFACE"))
+            std::sscanf(s, "%x,%u,%u", &v[0], &v[1], &v[2]);
+        return v;
+    }();
+    if (!surface[0] || !frame.base)
+        return;
+    // checked twice a second at most
+    static bool on = false;
+    static auto next_check = std::chrono::steady_clock::now();
+    if (std::chrono::steady_clock::now() >= next_check) {
+        std::error_code error;
+        on = std::filesystem::exists("display-surface.on", error);
+        next_check = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    }
+    if (!on)
+        return;
+    frame.base = Ptr<const void>(surface[0]);
+    frame.pitch = surface[1];
+    frame.image_size.x = static_cast<int>(surface[1]);
+    frame.image_size.y = static_cast<int>(surface[2]);
+}
+
 void VKState::render_frame(DisplayState &display, const GxmState &gxm, MemState &mem) {
     // we are displaying this frame, wait for a new one
     should_display = false;
@@ -1113,6 +1153,7 @@ void VKState::render_frame(DisplayState &display, const GxmState &gxm, MemState 
         std::lock_guard<std::mutex> guard(display.display_info_mutex);
         frame = display.next_rendered_frame;
     }
+    display_surface_override(frame);
 
     update_overlays();
     bool has_overlays = false;
@@ -1248,10 +1289,39 @@ std::vector<uint32_t> VKState::dump_frame(DisplayState &display, uint32_t &width
         std::lock_guard<std::mutex> guard(display.display_info_mutex);
         frame = display.next_rendered_frame;
     }
+    display_surface_override(frame);
 
     width = static_cast<uint32_t>(frame.image_size.x * res_multiplier);
     height = static_cast<uint32_t>(frame.image_size.y * res_multiplier);
-    return surface_cache.dump_frame(frame.base, width, height, frame.pitch);
+    std::vector<uint32_t> pixels = surface_cache.dump_frame(frame.base, width, height, frame.pitch);
+
+    // VITA3K_RECORD_INSETS=<address in hex>,<width>,<height>;...: recorded and saved frames get these RGBA8 colour
+    // surfaces pasted over their top left, side by side, raw (debugging aid: intermediate targets next to the result)
+    static const std::vector<std::array<uint32_t, 3>> insets = [] {
+        std::vector<std::array<uint32_t, 3>> list;
+        if (const char *v = std::getenv("VITA3K_RECORD_INSETS")) {
+            std::stringstream ss(v);
+            std::string item;
+            while (std::getline(ss, item, ';')) {
+                std::array<uint32_t, 3> s{};
+                if (std::sscanf(item.c_str(), "%x,%u,%u", &s[0], &s[1], &s[2]) == 3)
+                    list.push_back(s);
+            }
+        }
+        return list;
+    }();
+    uint32_t x = 0;
+    for (const auto &s : insets) {
+        if (pixels.size() != static_cast<size_t>(width) * height)
+            break;
+        const std::vector<uint32_t> inset = surface_cache.dump_frame(Ptr<const void>(s[0]), s[1], s[2], s[1]);
+        if (inset.size() == static_cast<size_t>(s[1]) * s[2])
+            for (uint32_t row = 0; row < std::min(s[2], height); row++)
+                for (uint32_t col = 0; col < s[1] && x + col < width; col++)
+                    pixels[row * width + x + col] = inset[row * s[1] + col];
+        x += s[1];
+    }
+    return pixels;
 }
 
 uint32_t VKState::get_features_mask() {

@@ -21,6 +21,7 @@
 #include <renderer/types.h>
 #include <shader/uniform_block.h>
 #include <vkutil/objects.h>
+#include <optional>
 
 struct MemState;
 
@@ -315,6 +316,10 @@ struct VKContext : public renderer::Context {
     vk::ImageView current_ds_view;
 
     bool is_recording = false;
+    // FeatureState::depth_store_scenes: the depth-stencil surface of the current scene, to put back at its end
+    std::optional<SceGxmDepthStencilSurface> scene_depth_restore;
+    // at the end of a scene (FeatureState::depth_store_scenes)
+    void restore_scene_depth();
     bool in_renderpass = false;
     bool refresh_pipeline = false;
     bool is_first_scene_draw = false;

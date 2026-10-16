@@ -1078,6 +1078,7 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_depth_stencil_as_tex
     DepthStencilSurfaceCacheInfo &cached_info = *found_info;
     if (tiling != cached_info.tiling || stride_samples != cached_info.stride_samples)
         return std::nullopt;
+    cached_info.sampled_as_texture = true;
 
     // we sample from it, set the surface as most recently used
     ds_surface_queue.set_as_mru(found_info);
@@ -1577,6 +1578,20 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
     } else {
         // a surface synced only for the GPU's reads stays out of guest RAM
         last_written_surface->need_buffer_sync = !last_written_surface->gpu_read_sync_only;
+        // VITA3K_NO_READBACK=<surface address in hex>,...: these surfaces never reach guest RAM, so the CPU keeps
+        // reading what was there (debugging aid: does a game decision follow a read-back value?)
+        static const std::vector<uint32_t> no_readback = [] {
+            std::vector<uint32_t> list;
+            if (const char *v = std::getenv("VITA3K_NO_READBACK")) {
+                std::stringstream ss(v);
+                std::string item;
+                while (std::getline(ss, item, ','))
+                    list.push_back(static_cast<uint32_t>(std::strtoul(item.c_str(), nullptr, 16)));
+            }
+            return list;
+        }();
+        if (std::find(no_readback.begin(), no_readback.end(), last_written_surface->data.address()) != no_readback.end())
+            last_written_surface->need_buffer_sync = false;
         last_written_surface->need_post_surface_sync = !is_swizzle_identity && !last_written_surface->gpu_read_sync_only;
         std::tie(buffer, offset) = state.get_matching_mapping(last_written_surface->data);
     }
@@ -1842,6 +1857,82 @@ std::vector<uint32_t> VKSurfaceCache::dump_frame(Ptr<const void> address, uint32
     memcpy(frame.data(), temp_buff.mapped_data, frame.size() * 4);
 
     return frame;
+}
+
+// copy a whole depth-stencil image to another of the same size and format, with barriers on both sides; both keep the
+// layout they had (a new copy, without one, ends as a transfer destination)
+static void copy_depth_stencil_image(vk::CommandBuffer cmd, vkutil::Image &src, vkutil::Image &dst) {
+    const vk::PipelineStageFlags ds_stages = vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests
+        | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eTransfer;
+    const vk::AccessFlags ds_access = vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite
+        | vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite;
+    const vk::ImageLayout src_layout = vkutil::get_underlying_layout(src.layout);
+    const bool dst_new = dst.layout == vkutil::ImageLayout::Undefined;
+    const vk::ImageLayout dst_layout = dst_new ? vk::ImageLayout::eTransferDstOptimal : vkutil::get_underlying_layout(dst.layout);
+    const std::array<vk::ImageMemoryBarrier, 2> before{
+        vk::ImageMemoryBarrier{ .srcAccessMask = ds_access, .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+            .oldLayout = src_layout, .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = src.image, .subresourceRange = vkutil::ds_subresource_range },
+        vk::ImageMemoryBarrier{ .srcAccessMask = ds_access, .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .oldLayout = dst_new ? vk::ImageLayout::eUndefined : dst_layout, .newLayout = vk::ImageLayout::eTransferDstOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst.image, .subresourceRange = vkutil::ds_subresource_range }
+    };
+    cmd.pipelineBarrier(ds_stages, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), {}, {}, before);
+    vk::ImageSubresourceLayers layers = vkutil::color_subresource_layer;
+    layers.aspectMask = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+    const vk::ImageCopy region{
+        .srcSubresource = layers,
+        .dstSubresource = layers,
+        .extent = { std::min(src.width, dst.width), std::min(src.height, dst.height), 1U }
+    };
+    cmd.copyImage(src.image, vk::ImageLayout::eTransferSrcOptimal, dst.image, vk::ImageLayout::eTransferDstOptimal, region);
+    const std::array<vk::ImageMemoryBarrier, 2> after{
+        vk::ImageMemoryBarrier{ .srcAccessMask = vk::AccessFlagBits::eTransferRead, .dstAccessMask = ds_access,
+            .oldLayout = vk::ImageLayout::eTransferSrcOptimal, .newLayout = src_layout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = src.image, .subresourceRange = vkutil::ds_subresource_range },
+        vk::ImageMemoryBarrier{ .srcAccessMask = vk::AccessFlagBits::eTransferWrite, .dstAccessMask = ds_access,
+            .oldLayout = vk::ImageLayout::eTransferDstOptimal, .newLayout = dst_layout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst.image, .subresourceRange = vkutil::ds_subresource_range }
+    };
+    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, ds_stages, vk::DependencyFlags(), {}, {}, after);
+    if (dst_new)
+        dst.layout = vkutil::ImageLayout::TransferDst;
+}
+
+static DepthStencilSurfaceCacheInfo *find_depth_stencil(std::map<Address, DepthStencilSurfaceCacheInfo *> &depth_lookup,
+    std::map<Address, DepthStencilSurfaceCacheInfo *> &stencil_lookup, const SceGxmDepthStencilSurface &surface) {
+    if (surface.depth_data) {
+        const auto it = depth_lookup.find(surface.depth_data.address());
+        return it == depth_lookup.end() ? nullptr : it->second;
+    }
+    const auto it = stencil_lookup.find(surface.stencil_data.address());
+    return it == stencil_lookup.end() ? nullptr : it->second;
+}
+
+bool VKSurfaceCache::backup_scene_depth_stencil(vk::CommandBuffer cmd, const SceGxmDepthStencilSurface &surface) {
+    DepthStencilSurfaceCacheInfo *info = find_depth_stencil(depth_address_lookup, stencil_address_lookup, surface);
+    if (!info || !info->sampled_as_texture || !info->texture.image)
+        return false;
+    if (!info->scene_backup || info->scene_backup->width != info->texture.width || info->scene_backup->height != info->texture.height) {
+        info->scene_backup = std::make_unique<vkutil::Image>(info->texture.width, info->texture.height, info->texture.format);
+        info->scene_backup->init_image(vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst);
+        info->scene_backup->layout = vkutil::ImageLayout::Undefined;
+    }
+    copy_depth_stencil_image(cmd, info->texture, *info->scene_backup);
+    return true;
+}
+
+void VKSurfaceCache::restore_scene_depth_stencil(vk::CommandBuffer cmd, const SceGxmDepthStencilSurface &surface) {
+    DepthStencilSurfaceCacheInfo *info = find_depth_stencil(depth_address_lookup, stencil_address_lookup, surface);
+    if (!info || !info->scene_backup || info->scene_backup->layout == vkutil::ImageLayout::Undefined)
+        return;
+    if (info->scene_backup->width != info->texture.width || info->scene_backup->height != info->texture.height)
+        return;
+    copy_depth_stencil_image(cmd, *info->scene_backup, info->texture);
 }
 
 } // namespace renderer::vulkan

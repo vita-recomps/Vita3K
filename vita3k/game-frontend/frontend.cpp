@@ -141,8 +141,14 @@ void record_frames(EmuEnvState &emuenv, const fs::path &dir, int count) {
         const int n = count - *left;
         if (!frame.empty() && frame.size() == static_cast<size_t>(width) * height) {
             std::thread([frame = std::move(frame), width, height, path = dir / fmt::format("{:05}.png", n)]() mutable {
-                for (uint32_t &pixel : frame)
-                    pixel |= 0xFF000000;
+                // VITA3K_RECORD_ALPHA=1: keep the alpha channel (debugging aid, with VITA3K_DISPLAY_SURFACE)
+                static const bool keep_alpha = [] {
+                    const char *v = std::getenv("VITA3K_RECORD_ALPHA");
+                    return v && v[0] == '1';
+                }();
+                if (!keep_alpha)
+                    for (uint32_t &pixel : frame)
+                        pixel |= 0xFF000000;
                 stbi_write_png(fs_utils::path_to_utf8(path).c_str(), width, height, 4, frame.data(), width * 4);
             }).detach();
         }

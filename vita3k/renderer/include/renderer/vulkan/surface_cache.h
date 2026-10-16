@@ -150,6 +150,11 @@ struct DepthStencilSurfaceCacheInfo : public SurfaceCacheInfo {
 
     // used when texture viewport is not enabled
     std::vector<DepthSurfaceView> read_surfaces;
+
+    // sampled as a texture at least once (FeatureState::depth_store_scenes only keeps those as stored)
+    bool sampled_as_texture = false;
+    // the surface as it was when a scene that doesn't store it began (FeatureState::depth_store_scenes)
+    std::unique_ptr<vkutil::Image> scene_backup;
 };
 
 // result when looking in the surface cache for a texture
@@ -223,6 +228,11 @@ public:
     std::optional<TextureLookupResult> retrieve_color_surface_as_texture(const SceGxmTexture &texture, const SceGxmColorBaseFormat base_format, TextureViewport *texture_viewport);
 
     SurfaceRetrieveResult retrieve_depth_stencil_for_framebuffer(SceGxmDepthStencilSurface *depth_stencil, const uint32_t width, const uint32_t height);
+    // FeatureState::depth_store_scenes: at the beginning of a scene that loads but doesn't store this depth-stencil
+    // surface, keep a copy of it (prerender cmd); at its end, put the copy back (outside a render pass), so the scene's
+    // depth and stencil writes don't outlast it, as on the hardware, where only a store writes them to memory
+    bool backup_scene_depth_stencil(vk::CommandBuffer cmd, const SceGxmDepthStencilSurface &surface);
+    void restore_scene_depth_stencil(vk::CommandBuffer cmd, const SceGxmDepthStencilSurface &surface);
     std::optional<TextureLookupResult> retrieve_depth_stencil_as_texture(const SceGxmTexture &texture, TextureViewport *texture_viewport);
 
     Framebuffer &retrieve_framebuffer_handle(MemState &mem, SceGxmColorSurface *color, SceGxmDepthStencilSurface *depth_stencil,

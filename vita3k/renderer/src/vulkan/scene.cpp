@@ -139,6 +139,34 @@ void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *
             LOG_INFO("fs {} uniform block {} at {}: game size {}, program size {} words{}", trace_fs_blocks, block_num, log_hex(data.address()), size,
                 program->uniform_buffer_sizes.at(block_num), offset == static_cast<std::uint32_t>(-1) ? " (not bound)" : "");
     }
+    // VITA3K_TRACE_FS_UNIFORMS=<fragment shader hash prefix>: log the first 8 floats of its uniform block 0, as the game
+    // wrote them, at every draw (debugging aid: follow parameters over time)
+    static const std::string trace_fs_uniforms = [] {
+        const char *v = std::getenv("VITA3K_TRACE_FS_UNIFORMS");
+        return std::string(v ? v : "");
+    }();
+    if (!vertex_shader && block_num == 0 && !trace_fs_uniforms.empty() && context.record.fragment_program
+        && hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).rfind(trace_fs_uniforms, 0) == 0
+        && data.address() && is_valid_addr_range(mem, data.address(), data.address() + 32)) {
+        const float *f = Ptr<const float>(data.address()).get(mem);
+        LOG_INFO("fs {} block 0 frame {}: {} {} {} {} {} {} {} {}", trace_fs_uniforms, context.frame_timestamp,
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+    }
+    // VITA3K_TRACE_VS_UNIFORMS=<vertex shader hash prefix>: log the first 16 floats of each of its uniform blocks, as the
+    // game wrote them, at every draw (debugging aid)
+    static const std::string trace_vs_uniforms = [] {
+        const char *v = std::getenv("VITA3K_TRACE_VS_UNIFORMS");
+        return std::string(v ? v : "");
+    }();
+    if (vertex_shader && !trace_vs_uniforms.empty() && context.record.vertex_program
+        && hex_string(context.record.vertex_program.get(mem)->renderer_data->hash).rfind(trace_vs_uniforms, 0) == 0
+        && data.address() && is_valid_addr_range(mem, data.address(), data.address() + 64)) {
+        const float *f = Ptr<const float>(data.address()).get(mem);
+        std::string values;
+        for (int i = 0; i < 16; i++)
+            values += fmt::format(" {:.4g}", f[i]);
+        LOG_INFO("vs {} block {} frame {} at {}:{}", trace_vs_uniforms, block_num, context.frame_timestamp, log_hex(data.address()), values);
+    }
     if (offset == static_cast<std::uint32_t>(-1)) {
         return;
     }
@@ -809,6 +837,20 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
             context.scissor.extent.height, context.scissor.offset.x, context.scissor.offset.y);
         if (seen.insert(key).second)
             LOG_INFO("target {} drawn by {}, frame {}", trace_target, key, context.frame_timestamp);
+    }
+    // VITA3K_TRACE_FS_TARGETS=<fragment shader hash prefix>: log (once each) the colour and depth surfaces it draws into
+    static const std::string trace_fs_targets = [] {
+        const char *v = std::getenv("VITA3K_TRACE_FS_TARGETS");
+        return std::string(v ? v : "");
+    }();
+    if (!trace_fs_targets.empty() && context.record.fragment_program
+        && hex_string(context.record.fragment_program.get(mem)->renderer_data->hash).rfind(trace_fs_targets, 0) == 0) {
+        static std::set<std::string> seen;
+        const std::string key = fmt::format("colour {:x} depth {:x} vs {}", context.record.color_surface.data.address(),
+            context.record.depth_stencil_surface.depth_data.address(),
+            hex_string(context.record.vertex_program.get(mem)->renderer_data->hash).substr(0, 16));
+        if (seen.insert(key).second)
+            LOG_INFO("fs {} draws into {}, frame {}", trace_fs_targets, key, context.frame_timestamp);
     }
     static const std::vector<std::string> skip_fragment_shaders = parse_hash_list("VITA3K_SKIP_FRAGMENT_SHADERS");
     // VITA3K_SKIP_SHADER_PAIRS=<vertex prefix>:<fragment prefix>,...: only draws with both
