@@ -374,6 +374,7 @@ void set_context(VKContext &context, MemState &mem, VKRenderTarget *rt, const Fe
     context.current_framebuffer = framebuffer.standard;
     context.current_shader_interlock_framebuffer = framebuffer.shader_interlock;
     context.current_color_base_image = framebuffer.base_image;
+    context.current_color_storage_view = framebuffer.storage_view ? framebuffer.storage_view : context.current_color_view;
 
     // make sure we are not keeping any texture from the previous pass
     // (textures can be still bound even though they are not used)
@@ -577,7 +578,7 @@ void VKContext::start_render_pass(bool create_descriptor_set) {
     // update descriptor set for the whole scene with the color attachment
     vk::DescriptorImageInfo descr_color_info{
         .sampler = nullptr,
-        .imageView = current_color_view,
+        .imageView = state.features.support_shader_interlock ? current_color_storage_view : current_color_view,
         .imageLayout = vk::ImageLayout::eGeneral,
     };
 

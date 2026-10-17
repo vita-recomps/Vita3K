@@ -60,6 +60,8 @@ struct Framebuffer {
     vk::Framebuffer shader_interlock;
     // base color image used by the framebuffer
     vkutil::Image *base_image;
+    // view for the shader interlock storage image (the colour view, or a linear one for an sRGB surface)
+    vk::ImageView storage_view;
 };
 
 struct CastedTexture {
@@ -93,6 +95,9 @@ struct ColorSurfaceCacheInfo : public SurfaceCacheInfo {
     vk::ImageView alternate_view = nullptr;
     // VITA3K_WHITE_SURFACES: the same image read as opaque white (debugging aid)
     vk::ImageView white_view = nullptr;
+    // an sRGB surface seen as linear (UNORM) by shaders that load and store it through shader interlock: they convert
+    // themselves, and an sRGB view would decode it a second time on the load
+    vk::ImageView storage_view = nullptr;
 
     // only used when upscaling is enabled, to downscale the image first
     std::unique_ptr<vkutil::Image> blit_image;
@@ -168,6 +173,7 @@ struct TextureLookupResult {
 struct SurfaceRetrieveResult {
     vk::ImageView view;
     vkutil::Image *base_image;
+    vk::ImageView storage_view = nullptr;
 };
 
 class VKSurfaceCache {

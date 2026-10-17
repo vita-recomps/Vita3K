@@ -144,6 +144,10 @@ void VKSurfaceCache::destroy_surface(ColorSurfaceCacheInfo &info) {
     info.casted_textures.clear();
 
     destroy_queue.add(info.alternate_view);
+    if (info.storage_view) {
+        destroy_queue.add(info.storage_view);
+        info.storage_view = nullptr;
+    }
     if (info.white_view) {
         destroy_queue.add(info.white_view);
         info.white_view = nullptr;
@@ -194,6 +198,10 @@ void VKSurfaceCache::cleanup() {
             state.device.destroy(info.alternate_view);
             info.alternate_view = nullptr;
         }
+        if (info.storage_view) {
+            state.device.destroy(info.storage_view);
+            info.storage_view = nullptr;
+        }
         if (info.white_view) {
             state.device.destroy(info.white_view);
             info.white_view = nullptr;
@@ -236,6 +244,25 @@ void VKSurfaceCache::cleanup() {
 }
 
 SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(MemState &mem, SceGxmColorSurface *color) {
+    // shader interlock loads and stores the surface as a storage image and does the sRGB conversions itself, so an sRGB
+    // surface gets a linear view for it (Killzone Mercenary's character shadows: an sRGB view decoded each load a second
+    // time, and each multiply into the occlusion map darkened it further, to a blob under the character)
+    const auto storage_view_of = [&](ColorSurfaceCacheInfo &info, vk::Format view_format) -> vk::ImageView {
+        if (!state.features.support_shader_interlock || view_format != vk::Format::eR8G8B8A8Srgb)
+            return nullptr;
+        if (!info.storage_view) {
+            vk::ImageViewCreateInfo view_info{
+                .image = info.texture.image,
+                .viewType = vk::ImageViewType::e2D,
+                .format = vk::Format::eR8G8B8A8Unorm,
+                .components = vkutil::default_comp_mapping,
+                .subresourceRange = vkutil::color_subresource_range
+            };
+            info.storage_view = state.device.createImageView(view_info);
+        }
+        return info.storage_view;
+    };
+
     // Create the key to access the cache struct
     const uint32_t address = color->data.address();
 
@@ -331,7 +358,7 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(Mem
             info.last_frame_rendered = context->frame_timestamp;
 
             if (vk_format == info.texture.format) {
-                return { info.texture.view, &info.texture };
+                return { info.texture.view, &info.texture, storage_view_of(info, vk_format) };
             } else {
                 // using both srgb/linear
                 if (!info.alternate_view) {
@@ -345,7 +372,7 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(Mem
                     info.alternate_view = state.device.createImageView(view_info);
                 }
 
-                return { info.alternate_view, &info.texture };
+                return { info.alternate_view, &info.texture, storage_view_of(info, vk_format) };
             }
         }
     }
@@ -436,7 +463,7 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(Mem
     // it's not impossible that this surface will be rendered once and only used after, so do not skip any shader on it
     state.pipeline_cache.can_use_deferred_compilation = false;
 
-    return { info_added.texture.view, &info_added.texture };
+    return { info_added.texture.view, &info_added.texture, storage_view_of(info_added, vk_format) };
 }
 
 std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_texture(const SceGxmTexture &texture, const SceGxmColorBaseFormat base_format, TextureViewport *texture_viewport) {
@@ -1343,6 +1370,7 @@ Framebuffer &VKSurfaceCache::retrieve_framebuffer_handle(MemState &mem, SceGxmCo
 
     color_view = color_result.view;
     ds_view = ds_result.view;
+    const vk::ImageView storage_view = color_result.storage_view ? color_result.storage_view : color_result.view;
 
     std::pair<vk::ImageView, vk::ImageView> key = { color_view, ds_view };
     auto it = framebuffer_array.find(key);
@@ -1375,7 +1403,7 @@ Framebuffer &VKSurfaceCache::retrieve_framebuffer_handle(MemState &mem, SceGxmCo
         fb_interlock = state.device.createFramebuffer(fb_info);
     }
 
-    return (framebuffer_array[key] = { fb_standard, fb_interlock, color_result.base_image });
+    return (framebuffer_array[key] = { fb_standard, fb_interlock, color_result.base_image, storage_view });
 }
 
 bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address) {
