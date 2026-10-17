@@ -19,9 +19,12 @@
 
 #include <modules/module_parent.h>
 
+#include <chrono>
+#include <filesystem>
 #include <set>
 #include <span>
 #include <stack>
+#include <thread>
 #if defined(__x86_64__) && !defined(__APPLE__)
 #include <xxh_x86dispatch.h>
 #else
@@ -36,6 +39,7 @@
 #include <gxm/types.h>
 #include <cpu/functions.h>
 #include <kernel/state.h>
+#include <mem/functions.h>
 #include <mem/state.h>
 
 #include <io/state.h>
@@ -2112,6 +2116,16 @@ EXPORT(int, sceGxmCreateRenderTarget, const SceGxmRenderTargetParams *params, Pt
     // the game's render-target sizes (its internal resolutions); created rarely, so logged
     LOG_INFO("Render target {}x{}, {} scene(s)/frame, multisample {}, flags {:#x}", params->width, params->height,
         params->scenesPerFrame, static_cast<int>(params->multisampleMode), params->flags);
+    // VITA3K_DELAY_MSAA_RT_MS=<ms>: stall the calling thread that long whenever a 960x544 4x-MSAA render
+    // target is created while the file delay-rt.on exists in the working folder (Killzone Mercenary's
+    // world set-up; debugging aid: what does a slower set-up change?)
+    static const int delay_msaa_rt_ms = [] {
+        const char *v = std::getenv("VITA3K_DELAY_MSAA_RT_MS");
+        return v ? std::atoi(v) : 0;
+    }();
+    if (delay_msaa_rt_ms > 0 && params->width == 960 && params->multisampleMode == SCE_GXM_MULTISAMPLE_4X
+        && std::filesystem::exists("delay-rt.on"))
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_msaa_rt_ms));
 
     return 0;
 }
@@ -4186,6 +4200,8 @@ EXPORT(void, sceGxmSetRegionClip, SceGxmContext *context, SceGxmRegionClipMode m
         if (thread && xMax - xMin == 127) {
             const Address sp = read_sp(*thread->cpu);
             for (Address a = sp; a < sp + 0x200; a += 4) {
+                if (!is_valid_addr(emuenv.mem, a))
+                    break;
                 const uint32_t v = *Ptr<uint32_t>(a).get(emuenv.mem);
                 if ((v & 1) && v >= 0x81000000 && v < 0x81a00000)
                     chain += fmt::format(" {:08x}", v);

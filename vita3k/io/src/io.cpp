@@ -42,6 +42,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <thread>
 
 #if defined(__aarch64__) && defined(__APPLE__)
 #define stat64 stat
@@ -421,6 +422,13 @@ int read_file(void *data, IOState &io, const SceUID fd, const SceSize size, cons
         const auto start = std::chrono::steady_clock::now();
         const int64_t offset = trace_reads ? static_cast<int64_t>(file->second.tell()) : 0;
         const auto read = file->second.read(data, 1, size);
+        // VITA3K_READ_MBPS=<n>: make every file read take at least its size at n MB/s, like slower media (debugging aid)
+        static const double read_mbps = [] {
+            const char *v = std::getenv("VITA3K_READ_MBPS");
+            return v ? std::atof(v) : 0.0;
+        }();
+        if (read_mbps > 0)
+            std::this_thread::sleep_until(start + std::chrono::microseconds(static_cast<int64_t>(read / read_mbps)));
         if (trace_reads)
             LOG_INFO("read {} fd {} offset {:#x} size {:#x} -> {:#x} in {} us", export_name, log_hex(fd), offset, size, read,
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());

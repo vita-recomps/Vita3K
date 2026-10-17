@@ -28,6 +28,7 @@
 #include <io/vfs.h>
 #include <kernel/load_self.h>
 #include <kernel/state.h>
+#include <mem/functions.h>
 #include <module/load_module.h>
 #include <nids/functions.h>
 #include <packages/license.h>
@@ -39,6 +40,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
@@ -154,6 +156,28 @@ static void log_import_call(char emulation_level, uint32_t nid, SceUID thread_id
 }
 
 void call_import(EmuEnvState &emuenv, CPUState &cpu, uint32_t nid, SceUID thread_id) {
+    // SSD_TRACE_STACK_LR=<return address in hex>: whenever an import is called from there, log (once each)
+    // the game's return addresses found on the stack, its caller chain (debugging aid)
+    static const Address trace_stack_lr = [] {
+        const char *v = std::getenv("SSD_TRACE_STACK_LR");
+        return v ? static_cast<Address>(std::strtoul(v, nullptr, 16)) : 0u;
+    }();
+    if (trace_stack_lr && (read_lr(cpu) & ~1u) == (trace_stack_lr & ~1u)) {
+        static std::mutex mutex;
+        static std::unordered_set<std::string> seen;
+        std::string chain;
+        const Address sp = read_sp(cpu);
+        for (Address a = sp; a < sp + 0x1000; a += 4) {
+            if (!is_valid_addr(emuenv.mem, a))
+                break;
+            const uint32_t v = *Ptr<uint32_t>(a).get(emuenv.mem);
+            if ((v & 1) && v >= 0x81000000 && v < 0x81900000)
+                chain += fmt::format(" {:08x}", v);
+        }
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (seen.insert(fmt::format("{}{}", thread_id, chain)).second)
+            LOG_INFO("stack at {} ({}), thread {}:{}", log_hex(trace_stack_lr), import_name(nid), thread_id, chain);
+    }
     // HLE - call our C++ function
     if (emuenv.kernel.debugger.watch_import_calls) {
         const std::unordered_set<uint32_t> hle_nid_blacklist = {
