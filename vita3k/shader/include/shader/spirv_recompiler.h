@@ -36,16 +36,29 @@ static constexpr int COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE = 3;
 // 17 (vekta-mercenary): U2F10F10F10 colour output emulated behind a specialization constant
 // 18 (vekta-mercenary): fragment shaders read the pixel's position from the global registers g23 and g24
 // 19 (vekta-mercenary): with vpck_zero_fill, a pack keeps the lanes the previous pack into the same register wrote
-static constexpr uint32_t CURRENT_VERSION = 19;
+// 20 (vekta-mercenary): shader interlock applies the fixed-function blend and colour mask; U2F10F10F10 for every fragment shader
+// 21 (vekta-mercenary): a texture that is part of a surface is sampled within that part
+static constexpr uint32_t CURRENT_VERSION = 21;
 // fragment shader using the rendering surface as a storage image (because of shader interlock) have a line
 // layout (constant_id = GAMMA_CORRECTION_SPECIALIZATIO_ID) const bool is_srgb = false;
 // Setting this constant to true performs gamma correction in the shader
 static constexpr uint32_t GAMMA_CORRECTION_SPECIALIZATION_ID = 0;
-// fragment shaders writing a colour (Vulkan) have a line
+// every fragment shader (Vulkan) has a line
 // layout (constant_id = U2F10F10F10_SPECIALIZATION_ID) const bool is_u2f10f10f10 = false;
 // Setting it to true stores the colour as a U2F10F10F10 surface would (the surface itself is RGBA16F): RGB rounded to
 // unsigned 10-bit floats, alpha clamped to [0, 1] and rounded to 2 bits
 static constexpr uint32_t U2F10F10F10_SPECIALIZATION_ID = 1;
+// fragment shaders using the surface as a storage image (shader interlock) do the fixed-function blend and colour mask
+// themselves, from these constants (Vulkan's vk::BlendFactor, vk::BlendOp and vk::ColorComponentFlags values): a program
+// that reads the colour may still be blended by the hardware (Killzone Mercenary multiplies its shadow map with one)
+static constexpr uint32_t BLEND_ENABLE_SPECIALIZATION_ID = 2; // bool
+static constexpr uint32_t BLEND_COLOR_SRC_SPECIALIZATION_ID = 3;
+static constexpr uint32_t BLEND_COLOR_DST_SPECIALIZATION_ID = 4;
+static constexpr uint32_t BLEND_COLOR_OP_SPECIALIZATION_ID = 5;
+static constexpr uint32_t BLEND_ALPHA_SRC_SPECIALIZATION_ID = 6;
+static constexpr uint32_t BLEND_ALPHA_DST_SPECIALIZATION_ID = 7;
+static constexpr uint32_t BLEND_ALPHA_OP_SPECIALIZATION_ID = 8;
+static constexpr uint32_t COLOR_MASK_SPECIALIZATION_ID = 9;
 
 enum struct Target {
     GLSLOpenGL,

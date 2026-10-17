@@ -98,6 +98,23 @@ spv::Id shader::usse::USSETranslatorVisitor::do_fetch_texture(const spv::Id tex,
             // only keep the first two coordinates (x,y)
             coord_id = m_b.createOp(spv::OpVectorShuffle, type_f32_v[2], { { true, coord_id }, { true, coord_id }, { false, 0 }, { false, 1 } });
             coord_id = m_b.createBuiltinCall(m_b.getTypeId(coord_id), std_builtins, GLSLstd450Fma, { coord_id, viewport_ratio, viewport_offset });
+
+            // a texture that is part of a surface ends at its own edges: keep the coordinates in that part (half a texel in),
+            // as the hardware clamps to the texture, instead of reading the rest of the surface (Killzone Mercenary's shadow
+            // decals cover more than their tile, and the next tile to the left is cleared to full shadow)
+            const spv::Id v2 = type_f32_v[2];
+            const spv::Id image_type = m_b.makeImageType(type_f32, spv::Dim2D, false, false, false, 1, spv::ImageFormatUnknown);
+            const spv::Id image = m_b.createUnaryOp(spv::OpImage, image_type, tex);
+            spv::Id image_size = m_b.createOp(spv::OpImageQuerySizeLod, m_b.makeVectorType(m_b.makeIntType(32), 2), { image, m_b.makeIntConstant(0) });
+            image_size = m_b.createUnaryOp(spv::OpConvertSToF, v2, image_size);
+            const spv::Id half_texel = m_b.createBinOp(spv::OpFDiv, v2, m_b.makeCompositeConstant(v2, { m_b.makeFloatConstant(0.5f), m_b.makeFloatConstant(0.5f) }), image_size);
+            const spv::Id low = m_b.createBinOp(spv::OpFAdd, v2, viewport_offset, half_texel);
+            const spv::Id high = m_b.createBinOp(spv::OpFSub, v2, m_b.createBinOp(spv::OpFAdd, v2, viewport_offset, viewport_ratio), half_texel);
+            const spv::Id clamped = m_b.createBuiltinCall(v2, std_builtins, GLSLstd450FClamp, { coord_id, low, high });
+            // only where the part is smaller than the surface (a whole surface keeps its own sampler addressing)
+            const spv::Id one = m_b.makeCompositeConstant(v2, { m_b.makeFloatConstant(1.0f), m_b.makeFloatConstant(1.0f) });
+            const spv::Id is_part = m_b.createBinOp(spv::OpFOrdLessThan, m_b.makeVectorType(m_b.makeBoolType(), 2), viewport_ratio, one);
+            coord_id = m_b.createTriOp(spv::OpSelect, v2, is_part, clamped, coord_id);
         } else {
             // extract the x,y and proj coordinate
             spv::Id coord_xy = m_b.createOp(spv::OpVectorShuffle, type_f32_v[2], { { true, coord_id }, { true, coord_id }, { false, 0 }, { false, 1 } });

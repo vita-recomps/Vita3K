@@ -813,6 +813,11 @@ static void create_fragment_inputs(spv::Builder &b, SpirvShaderParameters &param
             } else {
                 source = b.createOp(spv::OpImageRead, v4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
                 b.setPrecision(source, precision);
+                if (translation_state.is_vulkan && parameters.blend_constants[0]) {
+                    // kept for the fixed-function blend at the end (as stored: gamma-encoded on an sRGB surface)
+                    parameters.interlock_dst = b.createVariable(spv::NoPrecision, spv::StorageClassPrivate, v4, "interlock_dst");
+                    b.createStore(source, parameters.interlock_dst);
+                }
 
                 if (translation_state.is_vulkan) {
                     const spv::Id old_source = source;
@@ -1132,7 +1137,17 @@ static SpirvShaderParameters create_parameters(spv::Builder &b, const SceGxmProg
             b.addDecoration(spv_params.is_srgb_constant, spv::DecorationSpecId, (int)GAMMA_CORRECTION_SPECIALIZATION_ID);
             b.addName(spv_params.is_srgb_constant, "is_srgb");
         }
-        if (program.is_frag_color_used() && translation_state.is_vulkan) {
+        if (program.is_frag_color_used() && features.should_use_shader_interlock() && translation_state.is_vulkan) {
+            // layout (constant_id = BLEND_*_SPECIALIZATION_ID) const ... = ...;
+            static const char *const names[8] = { "blend_enable", "blend_color_src", "blend_color_dst", "blend_color_op",
+                "blend_alpha_src", "blend_alpha_dst", "blend_alpha_op", "color_mask" };
+            for (int i = 0; i < 8; i++) {
+                spv_params.blend_constants[i] = (i == 0) ? b.makeBoolConstant(false, true) : b.makeUintConstant(i == 7 ? 0xF : 0, true);
+                b.addDecoration(spv_params.blend_constants[i], spv::DecorationSpecId, (int)(BLEND_ENABLE_SPECIALIZATION_ID + i));
+                b.addName(spv_params.blend_constants[i], names[i]);
+            }
+        }
+        if (translation_state.is_vulkan) {
             // layout (constant_id = U2F10F10F10_SPECIALIZATION_ID) const bool is_u2f10f10f10 = false;
             spv_params.is_u2f10f10f10_constant = b.makeBoolConstant(false, true);
             b.addDecoration(spv_params.is_u2f10f10f10_constant, spv::DecorationSpecId, (int)U2F10F10F10_SPECIALIZATION_ID);
@@ -1535,6 +1550,79 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
         color = b.createTriOp(spv::OpSelect, v4, bad, utils::make_uniform_vector_from_type(b, v4, 0.0f), color);
     }
 
+    // shader interlock: the fixed-function blend and colour mask the pipeline would apply
+    if (parameters.interlock_dst && program.is_frag_color_used() && features.should_use_shader_interlock()) {
+        const spv::Id f32 = b.makeFloatType(32);
+        const spv::Id u32 = b.makeUintType(32);
+        const spv::Id v4 = b.makeVectorType(f32, 4);
+        const spv::Id v3 = b.makeVectorType(f32, 3);
+        const spv::Id bool_t = b.makeBoolType();
+        const spv::Id bv4 = b.makeVectorType(bool_t, 4);
+        const spv::Id *k = parameters.blend_constants;
+        spv::Id dst = b.createLoad(parameters.interlock_dst, spv::NoPrecision);
+        {
+            // the colour as the blend sees it: linear on an sRGB surface
+            const spv::Id dst_rgb = b.createOp(spv::OpVectorShuffle, v3, { { true, dst }, { true, dst }, { false, 0 }, { false, 1 }, { false, 2 } });
+            const spv::Id lin = b.createBuiltinCall(v3, utils.std_builtins, GLSLstd450Pow, { dst_rgb, utils::make_uniform_vector_from_type(b, v3, 2.2f) });
+            const spv::Id lin4 = b.createOp(spv::OpVectorShuffle, v4, { { true, lin }, { true, dst }, { false, 0 }, { false, 1 }, { false, 2 }, { false, 6 } });
+            const spv::Id srgb = parameters.is_srgb_constant;
+            dst = b.createTriOp(spv::OpSelect, v4, b.createCompositeConstruct(bv4, { srgb, srgb, srgb, srgb }), lin4, dst);
+        }
+        const spv::Id src = color;
+        const spv::Id one = utils::make_uniform_vector_from_type(b, v4, 1.0f);
+        auto splat = [&](spv::Id scalar) { return b.createCompositeConstruct(v4, { scalar, scalar, scalar, scalar }); };
+        const spv::Id src_a = splat(b.createCompositeExtract(src, f32, 3));
+        const spv::Id dst_a = splat(b.createCompositeExtract(dst, f32, 3));
+        const spv::Id sat = b.createBuiltinCall(v4, utils.std_builtins, GLSLstd450FMin, { src_a, b.createBinOp(spv::OpFSub, v4, one, dst_a) });
+        // vk::BlendFactor: 0 zero, 1 one, 2 src colour, 3 1 - src colour, 4 dst colour, 5 1 - dst colour, 6 src alpha,
+        // 7 1 - src alpha, 8 dst alpha, 9 1 - dst alpha, 14 src alpha saturate
+        const std::vector<std::pair<uint32_t, spv::Id>> factors = {
+            { 0, utils::make_uniform_vector_from_type(b, v4, 0.0f) }, { 1, one }, { 2, src },
+            { 3, b.createBinOp(spv::OpFSub, v4, one, src) }, { 4, dst }, { 5, b.createBinOp(spv::OpFSub, v4, one, dst) },
+            { 6, src_a }, { 7, b.createBinOp(spv::OpFSub, v4, one, src_a) }, { 8, dst_a }, { 9, b.createBinOp(spv::OpFSub, v4, one, dst_a) }, { 14, sat }
+        };
+        auto factor = [&](spv::Id which) {
+            spv::Id result = one;
+            for (const auto &f : factors) {
+                const spv::Id is = b.createBinOp(spv::OpIEqual, bool_t, which, b.makeUintConstant(f.first));
+                result = b.createTriOp(spv::OpSelect, v4, b.createCompositeConstruct(bv4, { is, is, is, is }), f.second, result);
+            }
+            return result;
+        };
+        // vk::BlendOp: 0 add, 1 subtract, 2 reverse subtract, 3 min, 4 max
+        auto combine = [&](spv::Id s, spv::Id d, spv::Id op) {
+            const spv::Id candidates[5] = { b.createBinOp(spv::OpFAdd, v4, s, d), b.createBinOp(spv::OpFSub, v4, s, d),
+                b.createBinOp(spv::OpFSub, v4, d, s), spv::NoResult, spv::NoResult };
+            spv::Id result = candidates[0];
+            for (uint32_t i = 1; i < 3; i++) {
+                const spv::Id is = b.createBinOp(spv::OpIEqual, bool_t, op, b.makeUintConstant(i));
+                result = b.createTriOp(spv::OpSelect, v4, b.createCompositeConstruct(bv4, { is, is, is, is }), candidates[i], result);
+            }
+            return result;
+        };
+        const spv::Id rgb_part = combine(b.createBinOp(spv::OpFMul, v4, src, factor(k[1])), b.createBinOp(spv::OpFMul, v4, dst, factor(k[2])), k[3]);
+        const spv::Id alpha_part = combine(b.createBinOp(spv::OpFMul, v4, src, factor(k[4])), b.createBinOp(spv::OpFMul, v4, dst, factor(k[5])), k[6]);
+        // min and max ignore the factors
+        auto minmax = [&](spv::Id part, spv::Id op) {
+            const spv::Id is_min = b.createBinOp(spv::OpIEqual, bool_t, op, b.makeUintConstant(3));
+            const spv::Id is_max = b.createBinOp(spv::OpIEqual, bool_t, op, b.makeUintConstant(4));
+            part = b.createTriOp(spv::OpSelect, v4, b.createCompositeConstruct(bv4, { is_min, is_min, is_min, is_min }),
+                b.createBuiltinCall(v4, utils.std_builtins, GLSLstd450FMin, { src, dst }), part);
+            return b.createTriOp(spv::OpSelect, v4, b.createCompositeConstruct(bv4, { is_max, is_max, is_max, is_max }),
+                b.createBuiltinCall(v4, utils.std_builtins, GLSLstd450FMax, { src, dst }), part);
+        };
+        const spv::Id rgb_final = minmax(rgb_part, k[3]);
+        const spv::Id alpha_final = minmax(alpha_part, k[6]);
+        const spv::Id blended = b.createOp(spv::OpVectorShuffle, v4, { { true, rgb_final }, { true, alpha_final }, { false, 0 }, { false, 1 }, { false, 2 }, { false, 7 } });
+        const spv::Id enable = k[0];
+        spv::Id result = b.createTriOp(spv::OpSelect, v4, b.createCompositeConstruct(bv4, { enable, enable, enable, enable }), blended, src);
+        // vk::ColorComponentFlags: 1 R, 2 G, 4 B, 8 A
+        std::vector<spv::Id> written;
+        for (uint32_t i = 0; i < 4; i++)
+            written.push_back(b.createBinOp(spv::OpINotEqual, bool_t, b.createBinOp(spv::OpBitwiseAnd, u32, k[7], b.makeUintConstant(1u << i)), b.makeUintConstant(0)));
+        color = b.createTriOp(spv::OpSelect, v4, b.createCompositeConstruct(bv4, written), result, dst);
+    }
+
     // the surface is RGBA16F in place of U2F10F10F10: store what the U2F10F10F10 surface would hold (shaders compare
     // its 2-bit alpha with 1: Killzone Mercenary classifies the pixels of its particle composite that way)
     if (parameters.is_u2f10f10f10_constant != 0) {
@@ -1927,8 +2015,8 @@ static SpirvCode convert_gxp_to_spirv_impl(const SceGxmProgram &program, const s
 
     // Capabilities
     b.addCapability(spv::CapabilityShader);
-    if (translation_state.is_fragment)
-        b.addCapability(spv::CapabilityImageQuery);
+    // fragment shaders query lods and sizes, and any shader sampling a part of a surface queries its size
+    b.addCapability(spv::CapabilityImageQuery);
     if (features.support_unknown_format)
         b.addCapability(spv::CapabilityStorageImageReadWithoutFormat);
     if (features.enable_memory_mapping) {

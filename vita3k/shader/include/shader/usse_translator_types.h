@@ -108,8 +108,13 @@ struct SpirvShaderParameters {
     // When using shader interlock, specialization constant telling us if the texture is gamma corrected
     spv::Id is_srgb_constant;
 
-    // Fragment shaders writing a colour (Vulkan): specialization constant telling us if the surface is U2F10F10F10
+    // Fragment shaders (Vulkan): specialization constant telling us if the surface is U2F10F10F10
     spv::Id is_u2f10f10f10_constant = 0;
+
+    // Shader interlock (Vulkan): the blend's specialization constants (enable, colour src/dst/op, alpha src/dst/op,
+    // colour mask) and the colour the surface held, as read
+    spv::Id blend_constants[8] = {};
+    spv::Id interlock_dst = 0;
 
     // Fragment shaders: the pixel's integer position on the render target at the Vita's resolution (uvec2), read through
     // the global registers g23 (x) and g24 (y)
