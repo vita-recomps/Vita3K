@@ -359,14 +359,19 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
                 gxm_texture.true_mip_count());
     }
 
-    // VITA3K_TRACE_UPLOADS=<width>x<height>: log every upload of textures that size (address, format, first words)
+    // VITA3K_TRACE_UPLOADS=<width>x<height>: log every upload of textures that size (address, format, first words);
+    // VITA3K_TRACE_UPLOADS=+<n>: every upload of textures at least n texels wide
     static const std::pair<uint32_t, uint32_t> trace_uploads = [] {
         std::pair<uint32_t, uint32_t> v{ 0, 0 };
-        if (const char *s = std::getenv("VITA3K_TRACE_UPLOADS"))
-            std::sscanf(s, "%ux%u", &v.first, &v.second);
+        if (const char *s = std::getenv("VITA3K_TRACE_UPLOADS")) {
+            if (s[0] == '+')
+                std::sscanf(s + 1, "%u", &v.first);
+            else
+                std::sscanf(s, "%ux%u", &v.first, &v.second);
+        }
         return v;
     }();
-    if (trace_uploads.first && trace_uploads.first == width && trace_uploads.second == height) {
+    if (trace_uploads.first && (trace_uploads.second ? trace_uploads.first == width && trace_uploads.second == height : width >= trace_uploads.first)) {
         const uint32_t *words = Ptr<uint32_t>(gxm_texture.data_addr << 2).get(mem);
         LOG_INFO("upload {}x{} at {} format {} mips {}: {:08x} {:08x} {:08x} {:08x}", width, height, log_hex(gxm_texture.data_addr << 2),
             log_hex(static_cast<uint32_t>(fmt)), gxm_texture.true_mip_count(), words[0], words[1], words[2], words[3]);
