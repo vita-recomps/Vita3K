@@ -22,7 +22,10 @@
 #include <util/log.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <map>
+#include <set>
+#include <string>
 #include <tuple>
 
 namespace shader {
@@ -169,6 +172,18 @@ ProgramInput get_program_input(const SceGxmProgram &program) {
                 // Killzone Mercenary's shadow casters declare sSkinningMatrices as a single float3x4 and index it by
                 // bone: only the first bone was kept in sync, the others read stale data (flickering, stretched
                 // character shadows)
+                // VITA3K_TRACE_UB_PARAMS=1: log (once each) uniform parameters by name, array size and buffer (debugging aid)
+                static const bool trace_params = [] {
+                    const char *v = std::getenv("VITA3K_TRACE_UB_PARAMS");
+                    return v && v[0] == '1';
+                }();
+                if (trace_params) {
+                    static std::set<std::string> seen;
+                    const std::string key = fmt::format("{} array {} x {} components, buffer {} offset {}", var_name, parameter.array_size,
+                        parameter.component_count, parameter.container_index, parameter.resource_index);
+                    if (seen.insert(key).second)
+                        LOG_INFO("uniform parameter {}", key);
+                }
                 if (var_name == "g_mSkinTransforms" || var_name == "sSkinningMatrices")
                     uniform_buffers[parameter.container_index].size = SCE_GXM_MAX_UB_IN_FLOAT_UNIT;
             }
