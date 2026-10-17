@@ -1225,6 +1225,14 @@ struct SceGxmTexture {
         uint32_t count = (mip_count + 1) & 15;
         return (count == 0) ? 1 : count; // 0 count is no mip chain, but there's still top level...
     }
+
+    // The minimum LOD is a 4-bit value split over control words 2 and 3: lod_min0 holds its high bits and
+    // lod_min1 its low bits (as in Vita3K-Plus 98d04579). A game that writes its texture controls itself
+    // (Killzone Mercenary, which lowers the minimum LOD as it streams a texture's mips in) was otherwise
+    // clamped to coarser mips, its textures blurred for seconds after their data arrived.
+    uint32_t true_lod_min() const {
+        return (lod_min0 << 2) | lod_min1;
+    }
 };
 
 static_assert(sizeof(SceGxmTexture) == 16);
