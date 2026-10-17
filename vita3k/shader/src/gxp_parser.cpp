@@ -166,7 +166,10 @@ ProgramInput get_program_input(const SceGxmProgram &program) {
                 // hack (kind of) : Uncharted declares a uniform containing only a vec4 g_mSkinTransforms[96]
                 // however it accesses  g_mSkinTransforms[147] (for some default value I guess)
                 // so set the size to unbounded in the shader
-                if (var_name == "g_mSkinTransforms")
+                // Killzone Mercenary's shadow casters declare sSkinningMatrices as a single float3x4 and index it by
+                // bone: only the first bone was kept in sync, the others read stale data (flickering, stretched
+                // character shadows)
+                if (var_name == "g_mSkinTransforms" || var_name == "sSkinningMatrices")
                     uniform_buffers[parameter.container_index].size = SCE_GXM_MAX_UB_IN_FLOAT_UNIT;
             }
             break;
