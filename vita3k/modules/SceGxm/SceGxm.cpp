@@ -34,6 +34,7 @@
 #include <gxm/functions.h>
 #include <gxm/state.h>
 #include <gxm/types.h>
+#include <cpu/functions.h>
 #include <kernel/state.h>
 #include <mem/state.h>
 
@@ -1682,6 +1683,9 @@ EXPORT(int, sceGxmBeginCommandList, SceGxmContext *deferredContext) {
     return 0;
 }
 
+// the colour surface of the scene begun last (VITA3K_TRACE_CLIP)
+static Address traced_scene_colour = 0;
+
 EXPORT(int, sceGxmBeginScene, SceGxmContext *context, uint32_t flags, const SceGxmRenderTarget *renderTarget, const SceGxmValidRegion *validRegion, SceGxmSyncObject *vertexSyncObject, Ptr<SceGxmSyncObject> fragmentSyncObject, const SceGxmColorSurface *colorSurface, const SceGxmDepthStencilSurface *depthStencil) {
     TRACY_FUNC(sceGxmBeginScene, context, flags, renderTarget, validRegion, vertexSyncObject, fragmentSyncObject, colorSurface, depthStencil);
     if (!context) {
@@ -1724,6 +1728,7 @@ EXPORT(int, sceGxmBeginScene, SceGxmContext *context, uint32_t flags, const SceG
     context->is_vert_texture_dirty.set();
     context->is_frag_texture_dirty.set();
 
+    traced_scene_colour = colorSurface ? colorSurface->data.address() : 0;
     SceGxmColorSurface *color_surface_copy = nullptr;
     SceGxmDepthStencilSurface *depth_stencil_surface_copy = nullptr;
 
@@ -4168,6 +4173,29 @@ EXPORT(void, sceGxmSetPrecomputedVertexState, SceGxmContext *context, Ptr<SceGxm
 
 EXPORT(void, sceGxmSetRegionClip, SceGxmContext *context, SceGxmRegionClipMode mode, uint32_t xMin, uint32_t yMin, uint32_t xMax, uint32_t yMax) {
     TRACY_FUNC(sceGxmSetRegionClip, context, mode, xMin, yMin, xMax, yMax);
+    // VITA3K_TRACE_CLIP=<colour surface address in hex>: log (once each) the region clips set while scenes render into it
+    static const uint32_t trace_clip = [] {
+        const char *v = std::getenv("VITA3K_TRACE_CLIP");
+        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0u;
+    }();
+    if (trace_clip && traced_scene_colour == trace_clip) {
+        static std::set<std::string> seen;
+        const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
+        // return addresses found on the stack (code addresses with the Thumb bit), the caller chain
+        std::string chain;
+        if (thread && xMax - xMin == 127) {
+            const Address sp = read_sp(*thread->cpu);
+            for (Address a = sp; a < sp + 0x200; a += 4) {
+                const uint32_t v = *Ptr<uint32_t>(a).get(emuenv.mem);
+                if ((v & 1) && v >= 0x81000000 && v < 0x81a00000)
+                    chain += fmt::format(" {:08x}", v);
+            }
+        }
+        const std::string key = fmt::format("mode {:#x} {},{} - {},{} lr {:08x}{}", static_cast<uint32_t>(mode), xMin, yMin, xMax, yMax,
+            thread ? read_lr(*thread->cpu) : 0u, chain);
+        if (seen.insert(key).second)
+            LOG_INFO("region clip on {}: {}", log_hex(trace_clip), key);
+    }
     bool change_detected = false;
 
     if (context->state.region_clip_mode != mode) {

@@ -165,7 +165,8 @@ void set_uniform_buffer(VKContext &context, MemState &mem, const ShaderProgram *
         std::string values;
         for (int i = 0; i < 16; i++)
             values += fmt::format(" {:.4g}", f[i]);
-        LOG_INFO("vs {} block {} frame {} at {}:{}", trace_vs_uniforms, block_num, context.frame_timestamp, log_hex(data.address()), values);
+        LOG_INFO("vs {} block {} frame {} at {} (game size {}, program size {} words):{}", trace_vs_uniforms, block_num, context.frame_timestamp,
+            log_hex(data.address()), size, program->uniform_buffer_sizes.at(block_num), values);
     }
     if (offset == static_cast<std::uint32_t>(-1)) {
         return;
