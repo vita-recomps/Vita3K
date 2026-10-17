@@ -171,7 +171,7 @@ ProgramInput get_program_input(const SceGxmProgram &program) {
                 // so set the size to unbounded in the shader
                 // Killzone Mercenary's shadow casters declare sSkinningMatrices as a single float3x4 and index it by
                 // bone: only the first bone was kept in sync, the others read stale data (flickering, stretched
-                // character shadows)
+                // character shadows). Their bone indices are 8-bit: 256 float3x4 cover every bone they can reach
                 // VITA3K_TRACE_UB_PARAMS=1: log (once each) uniform parameters by name, array size and buffer (debugging aid)
                 static const bool trace_params = [] {
                     const char *v = std::getenv("VITA3K_TRACE_UB_PARAMS");
@@ -184,8 +184,10 @@ ProgramInput get_program_input(const SceGxmProgram &program) {
                     if (seen.insert(key).second)
                         LOG_INFO("uniform parameter {}", key);
                 }
-                if (var_name == "g_mSkinTransforms" || var_name == "sSkinningMatrices")
+                if (var_name == "g_mSkinTransforms")
                     uniform_buffers[parameter.container_index].size = SCE_GXM_MAX_UB_IN_FLOAT_UNIT;
+                if (var_name == "sSkinningMatrices")
+                    uniform_buffers[parameter.container_index].size = std::max<uint32_t>(uniform_buffers[parameter.container_index].size, 256 * 12);
             }
             break;
         }
