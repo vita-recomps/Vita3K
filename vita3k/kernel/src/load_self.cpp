@@ -41,6 +41,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 
 static constexpr uint32_t NID_MODULE_STOP = 0x79F8E492;
 static constexpr uint32_t NID_MODULE_EXIT = 0x913482A9;
@@ -820,6 +821,22 @@ SceUID load_self(KernelState &kernel, MemState &mem, const void *self, const std
     LOG_INFO("Linking {} {}...", is_self ? "SELF" : "ELF", self_path);
     if (self_path.contains("eboot.bin"))
         LOG_INFO("eboot.bin module NID: {}", log_hex(module_info->module_nid));
+    // VITA3K_PATCH_EBOOT=<address>:<hex bytes>[,...]: write those bytes into the eboot once it is loaded
+    // (debugging aid; reaches only code that runs on the JIT, not recompiled modules)
+    if (const char *patches = std::getenv("VITA3K_PATCH_EBOOT"); patches && self_path.contains("eboot.bin")) {
+        std::stringstream list(patches);
+        std::string item;
+        while (std::getline(list, item, ',')) {
+            const auto colon = item.find(':');
+            if (colon == std::string::npos)
+                continue;
+            const Address address = static_cast<Address>(std::strtoul(item.substr(0, colon).c_str(), nullptr, 16));
+            const std::string bytes = item.substr(colon + 1);
+            for (size_t i = 0; i + 1 < bytes.size(); i += 2)
+                *Ptr<uint8_t>(address + static_cast<Address>(i / 2)).get(mem) = static_cast<uint8_t>(std::strtoul(bytes.substr(i, 2).c_str(), nullptr, 16));
+            LOG_INFO("eboot patched at {}: {}", log_hex(address), bytes);
+        }
+    }
 
     if (!load_exports(sceKernelModuleInfo, *module_info, module_info_segment_address, kernel, mem)) {
         return -1;
