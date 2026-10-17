@@ -1064,6 +1064,21 @@ spv::Id load(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFunc
         return result;
     }
 
+    if (op.bank == RegisterBank::GLOBAL && (op.num == 23 || op.num == 24) && params.pixel_position) {
+        // g23 / g24: the pixel's x / y (the hardware's are within the tile, with the tile's position in g43, which reads 0)
+        const spv::Id u32 = b.makeUintType(32);
+        spv::Id value = b.createCompositeExtract(b.createLoad(params.pixel_position, spv::NoPrecision), u32, op.num == 23 ? 0 : 1);
+        if (is_float_data_type(op.type))
+            value = b.createUnaryOp(spv::OpConvertUToF, type_f32, value);
+        else if (!is_unsigned_integer_data_type(op.type))
+            value = b.createUnaryOp(spv::OpBitcast, b.makeIntType(32), value);
+        if (dest_comp_count > 1) {
+            std::vector<spv::Id> comps(dest_comp_count, value);
+            value = b.createCompositeConstruct(b.makeVectorType(b.getTypeId(value), static_cast<int>(dest_comp_count)), comps);
+        }
+        return value;
+    }
+
     if (op.bank == RegisterBank::IMMEDIATE || !get_reg_bank(params, op.bank)) {
         if (op.bank != RegisterBank::INDEXED1 && op.bank != RegisterBank::INDEXED2) {
             if (dest_comp_count == 1) {

@@ -433,41 +433,39 @@ void PipelineCache::cleanup() {
     nb_worker_threads = 0;
 }
 
-// Vulkan structs used to specify a specialization constant
+// Vulkan structs used to specify the specialization constants of fragment shaders (is_srgb, is_u2f10f10f10)
 // Also, booleans in SPIRV are 32bit wide
-static const vk::SpecializationMapEntry srgb_entry = {
-    .constantID = shader::GAMMA_CORRECTION_SPECIALIZATION_ID,
-    .offset = 0,
-    .size = sizeof(uint32_t)
-};
+static const std::array<vk::SpecializationMapEntry, 2> fragment_spec_entries = { {
+    { shader::GAMMA_CORRECTION_SPECIALIZATION_ID, 0, sizeof(uint32_t) },
+    { shader::U2F10F10F10_SPECIALIZATION_ID, sizeof(uint32_t), sizeof(uint32_t) },
+} };
 
-static const uint32_t srgb_entry_true = vk::True;
-static const uint32_t srgb_entry_false = vk::False;
+// indexed by is_srgb + 2 * is_u2f10f10f10
+static const std::array<std::array<uint32_t, 2>, 4> fragment_spec_values = { {
+    { vk::False, vk::False },
+    { vk::True, vk::False },
+    { vk::False, vk::True },
+    { vk::True, vk::True },
+} };
 
-static const vk::SpecializationInfo srgb_info_true = {
-    .mapEntryCount = 1,
-    .pMapEntries = &srgb_entry,
-    .dataSize = sizeof(uint32_t),
-    .pData = &srgb_entry_true
-};
+static const std::array<vk::SpecializationInfo, 4> fragment_spec_infos = { {
+    { 2, fragment_spec_entries.data(), 2 * sizeof(uint32_t), fragment_spec_values[0].data() },
+    { 2, fragment_spec_entries.data(), 2 * sizeof(uint32_t), fragment_spec_values[1].data() },
+    { 2, fragment_spec_entries.data(), 2 * sizeof(uint32_t), fragment_spec_values[2].data() },
+    { 2, fragment_spec_entries.data(), 2 * sizeof(uint32_t), fragment_spec_values[3].data() },
+} };
 
-static const vk::SpecializationInfo srgb_info_false = {
-    .mapEntryCount = 1,
-    .pMapEntries = &srgb_entry,
-    .dataSize = sizeof(uint32_t),
-    .pData = &srgb_entry_false
-};
-
-vk::PipelineShaderStageCreateInfo PipelineCache::retrieve_shader(const SceGxmProgram *program, const Sha256Hash &hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb) {
+vk::PipelineShaderStageCreateInfo PipelineCache::retrieve_shader(const SceGxmProgram *program, const Sha256Hash &hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb, bool is_u2f10f10f10) {
     if (maskupdate)
         LOG_WARN_ONCE("Mask not implemented in the vulkan renderer!");
 
     const vk::ShaderModule shader_compiling = std::bit_cast<vk::ShaderModule>(~0ULL);
 
     const vk::SpecializationInfo *spec_info = nullptr;
-    if (!is_vertex && state.features.should_use_shader_interlock() && program->is_frag_color_used()) {
-        // if the specialization constant is used in the shader
-        spec_info = is_srgb ? &srgb_info_true : &srgb_info_false;
+    if (!is_vertex && program->is_frag_color_used()) {
+        // the shader has the specialization constants (is_srgb only with shader interlock)
+        const bool srgb = is_srgb && state.features.should_use_shader_interlock();
+        spec_info = &fragment_spec_infos[(srgb ? 1 : 0) + (is_u2f10f10f10 ? 2 : 0)];
     }
 
     vk::ShaderModule *shader_module;
@@ -844,7 +842,8 @@ vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::Rende
     const vk::PipelineVertexInputStateCreateInfo vertex_input = get_vertex_input_state(vertex_program_gxm, mem);
 
     const vk::PipelineShaderStageCreateInfo vertex_shader = retrieve_shader(vertex_program_gxm.program.get(mem), vertex_program.hash, true, fragment_program_gxm.is_maskupdate, mem, hints);
-    const vk::PipelineShaderStageCreateInfo fragment_shader = retrieve_shader(gxm_fragment_shader, fragment_program.hash, false, fragment_program_gxm.is_maskupdate, mem, hints, record.is_gamma_corrected);
+    const vk::PipelineShaderStageCreateInfo fragment_shader = retrieve_shader(gxm_fragment_shader, fragment_program.hash, false, fragment_program_gxm.is_maskupdate, mem, hints, record.is_gamma_corrected,
+        record.color_base_format == SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10);
     const vk::PipelineShaderStageCreateInfo shader_stages[] = { vertex_shader, fragment_shader };
     // disable the fragment shader if gxm asks us to
     const bool is_fragment_disabled = record.front_side_fragment_program_mode == SCE_GXM_FRAGMENT_PROGRAM_DISABLED || gxm_fragment_shader->has_no_effect();

@@ -819,6 +819,50 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
     }
 }
 
+// The guest memory of a linear, single-sampled, stencil-only S8 surface as the GPU sees it (memory mapping, native
+// resolution): the mapped buffer and the offset in it, or nullptr when the stencil stays in the cached image only
+static const MappedMemory *stencil_memory(VKState &state, const DepthStencilSurfaceCacheInfo &info, const SceGxmDepthStencilSurface &surface, vk::DeviceSize &offset) {
+    if (!state.features.enable_memory_mapping || surface.depth_data || !surface.stencil_data
+        || surface.get_format() != SCE_GXM_DEPTH_STENCIL_FORMAT_S8 || info.tiling != SurfaceTiling::Linear
+        || info.multisample_mode != SCE_GXM_MULTISAMPLE_NONE || state.res_multiplier != 1.0f
+        || info.texture.width != static_cast<uint32_t>(info.memory_width) || info.texture.height != static_cast<uint32_t>(info.memory_height)
+        || info.stride_samples < static_cast<uint32_t>(info.memory_width))
+        return nullptr;
+    const Address address = surface.stencil_data.address();
+    const auto it = state.mapped_memories.lower_bound(address);
+    if (it == state.mapped_memories.end() || address + info.stride_samples * info.memory_height > it->first + it->second.size)
+        return nullptr;
+    offset = address - it->first;
+    return &it->second;
+}
+
+static vk::BufferImageCopy stencil_memory_region(const DepthStencilSurfaceCacheInfo &info, vk::DeviceSize offset) {
+    return vk::BufferImageCopy{
+        .bufferOffset = offset,
+        .bufferRowLength = info.stride_samples,
+        .bufferImageHeight = static_cast<uint32_t>(info.memory_height),
+        .imageSubresource = { vk::ImageAspectFlagBits::eStencil, 0, 0, 1 },
+        .imageOffset = { 0, 0, 0 },
+        .imageExtent = { info.texture.width, info.texture.height, 1 }
+    };
+}
+
+// a force-loaded surface whose stencil lives in memory gets it from there (prerender cmd: before the scene, after the
+// previous scenes' shader stores)
+static void load_stencil_from_memory(VKState &state, vk::CommandBuffer cmd, DepthStencilSurfaceCacheInfo &info, const SceGxmDepthStencilSurface &surface) {
+    vk::DeviceSize offset = 0;
+    const MappedMemory *memory = surface.force_load ? stencil_memory(state, info, surface, offset) : nullptr;
+    if (!memory)
+        return;
+    const vk::MemoryBarrier written{ .srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite,
+        .dstAccessMask = vk::AccessFlagBits::eTransferRead };
+    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), written, {}, {});
+    info.texture.transition_to(cmd, vkutil::ImageLayout::TransferDst, vkutil::ds_subresource_range);
+    cmd.copyBufferToImage(memory->buffer, info.texture.image, vk::ImageLayout::eTransferDstOptimal, stencil_memory_region(info, offset));
+    info.texture.transition_to(cmd, vkutil::ImageLayout::DepthStencilReadOnly, vkutil::ds_subresource_range);
+}
+
 SurfaceRetrieveResult VKSurfaceCache::retrieve_depth_stencil_for_framebuffer(SceGxmDepthStencilSurface *depth_stencil, const uint32_t width, const uint32_t height) {
     // when writing we use the render target size which is already upscaled
     int32_t memory_width = static_cast<int32_t>(width / state.res_multiplier);
@@ -854,11 +898,13 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_depth_stencil_for_framebuffer(Sce
             || cached_info->stride_samples != depth_stencil->get_stride()
             || cached_info->tiling != tiling;
 
-        if (!need_remake)
+        if (!need_remake) {
+            load_stencil_from_memory(state, reinterpret_cast<VKContext *>(state.context)->prerender_cmd, *cached_info, *depth_stencil);
             return {
                 cached_info->texture.view,
                 &cached_info->texture
             };
+        }
     } else {
         // retrieve a new depth stencil
         cached_info = ds_surface_queue.get_lru();
@@ -929,6 +975,7 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_depth_stencil_for_framebuffer(Sce
     };
     cmd_buffer.clearDepthStencilImage(image.image, vk::ImageLayout::eTransferDstOptimal, clear_value, vkutil::ds_subresource_range);
     image.transition_to(cmd_buffer, vkutil::ImageLayout::DepthStencilReadOnly, vkutil::ds_subresource_range);
+    load_stencil_from_memory(state, cmd_buffer, *cached_info, *depth_stencil);
 
     return {
         image.view,
@@ -1933,6 +1980,35 @@ void VKSurfaceCache::restore_scene_depth_stencil(vk::CommandBuffer cmd, const Sc
     if (info->scene_backup->width != info->texture.width || info->scene_backup->height != info->texture.height)
         return;
     copy_depth_stencil_image(cmd, *info->scene_backup, info->texture);
+}
+
+void VKSurfaceCache::store_stencil_to_memory(vk::CommandBuffer cmd, const SceGxmDepthStencilSurface &surface) {
+    DepthStencilSurfaceCacheInfo *info = find_depth_stencil(depth_address_lookup, stencil_address_lookup, surface);
+    vk::DeviceSize offset = 0;
+    const MappedMemory *memory = (info && info->texture.image) ? stencil_memory(state, *info, surface, offset) : nullptr;
+    if (!memory)
+        return;
+    const vk::PipelineStageFlags ds_stages = vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests
+        | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eTransfer;
+    const vk::AccessFlags ds_access = vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite
+        | vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite;
+    const vk::ImageLayout layout = vkutil::get_underlying_layout(info->texture.layout);
+    vk::ImageMemoryBarrier barrier{ .srcAccessMask = ds_access, .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+        .oldLayout = layout, .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = info->texture.image, .subresourceRange = vkutil::ds_subresource_range };
+    cmd.pipelineBarrier(ds_stages, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), {}, {}, barrier);
+    cmd.copyImageToBuffer(info->texture.image, vk::ImageLayout::eTransferSrcOptimal, memory->buffer, stencil_memory_region(*info, offset));
+    barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+    barrier.dstAccessMask = ds_access;
+    barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+    barrier.newLayout = layout;
+    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, ds_stages, vk::DependencyFlags(), {}, {}, barrier);
+    // later shaders and copies read the memory
+    const vk::MemoryBarrier written{ .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+        .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite };
+    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), written, {}, {});
 }
 
 } // namespace renderer::vulkan

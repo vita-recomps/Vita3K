@@ -233,6 +233,11 @@ public:
     // depth and stencil writes don't outlast it, as on the hardware, where only a store writes them to memory
     bool backup_scene_depth_stencil(vk::CommandBuffer cmd, const SceGxmDepthStencilSurface &surface);
     void restore_scene_depth_stencil(vk::CommandBuffer cmd, const SceGxmDepthStencilSurface &surface);
+    // A linear, single-sampled, stencil-only S8 surface keeps its stencil in guest memory, as on the hardware (with
+    // memory mapping, at the native resolution): a scene that force-loads it reads it from there (retrieve_depth_stencil_for_framebuffer,
+    // prerender cmd), where shaders may have written it (Killzone Mercenary's particle composite picks its pixels with a
+    // stencil a shader stores), and one that force-stores it writes it back at its end (outside a render pass)
+    void store_stencil_to_memory(vk::CommandBuffer cmd, const SceGxmDepthStencilSurface &surface);
     std::optional<TextureLookupResult> retrieve_depth_stencil_as_texture(const SceGxmTexture &texture, TextureViewport *texture_viewport);
 
     Framebuffer &retrieve_framebuffer_handle(MemState &mem, SceGxmColorSurface *color, SceGxmDepthStencilSurface *depth_stencil,

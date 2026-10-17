@@ -318,7 +318,10 @@ struct VKContext : public renderer::Context {
     bool is_recording = false;
     // FeatureState::depth_store_scenes: the depth-stencil surface of the current scene, to put back at its end
     std::optional<SceGxmDepthStencilSurface> scene_depth_restore;
-    // at the end of a scene (FeatureState::depth_store_scenes)
+    // the force-stored depth-stencil surface of the current scene, whose stencil may go back to memory at its end
+    // (VKSurfaceCache::store_stencil_to_memory)
+    std::optional<SceGxmDepthStencilSurface> scene_stencil_store;
+    // at the end of a scene: store the stencil to memory, put back the depth-stencil (FeatureState::depth_store_scenes)
     void restore_scene_depth();
     bool in_renderpass = false;
     bool refresh_pipeline = false;

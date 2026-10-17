@@ -527,9 +527,22 @@ bool USSETranslatorVisitor::vpck(
     // value. Killzone Mercenary's shaders hang the GPU at its first level without it; Vita3K-Plus
     // found this (nckstwrt/Vita3K-Plus, commit 6fc25451), and noted that another game needs those
     // lanes kept. What the hardware does is not known yet, hence a per-game choice.
+    // A pack right after one into other lanes of the same register keeps that one's lanes: Killzone Mercenary
+    // packs the bytes of a word in two halves (VPCKU8F16 pa2.xy, then pa2.--zw) and stores the whole word.
     Imm4 store_mask = dest_mask;
     const std::size_t lane_size = get_data_type_size(inst.opr.dest.type);
-    if (m_features.vpck_zero_fill && is_integer_data_type(inst.opr.dest.type) && lane_size < 4) {
+    const bool packs_integers = is_integer_data_type(inst.opr.dest.type) && lane_size < 4;
+    Imm4 kept = 0;
+    if (packs_integers && repeat_count == RepeatCount::REPEAT_0 && m_last_integer_pack.valid && m_last_integer_pack.pc + 1 == m_recompiler.cur_pc
+        && m_last_integer_pack.second_program == m_second_program && m_last_integer_pack.bank == inst.opr.dest.bank
+        && m_last_integer_pack.num == inst.opr.dest.num && m_last_integer_pack.type == inst.opr.dest.type)
+        kept = m_last_integer_pack.mask & ~dest_mask;
+    if (packs_integers && repeat_count == RepeatCount::REPEAT_0)
+        m_last_integer_pack = { true, m_recompiler.cur_pc, m_second_program, inst.opr.dest.bank, static_cast<uint32_t>(inst.opr.dest.num), inst.opr.dest.type,
+            static_cast<Imm4>(dest_mask | kept) };
+    else
+        m_last_integer_pack.valid = false;
+    if (m_features.vpck_zero_fill && packs_integers) {
         const int lanes_per_register = static_cast<int>(4 / lane_size);
         Imm4 whole = 0;
         for (int first = 0; first < 4; first += lanes_per_register) {
@@ -537,6 +550,7 @@ bool USSETranslatorVisitor::vpck(
             if (dest_mask & register_lanes)
                 whole |= register_lanes;
         }
+        whole &= ~kept;
         if (whole != dest_mask) {
             const spv::Id lane_type = m_b.isScalar(source) ? m_b.getTypeId(source) : m_b.getContainedTypeId(m_b.getTypeId(source));
             const spv::Id zero = m_b.isUintType(lane_type) ? m_b.makeUintConstant(0) : m_b.makeIntConstant(0);

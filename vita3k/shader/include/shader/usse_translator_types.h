@@ -107,6 +107,13 @@ struct SpirvShaderParameters {
 
     // When using shader interlock, specialization constant telling us if the texture is gamma corrected
     spv::Id is_srgb_constant;
+
+    // Fragment shaders writing a colour (Vulkan): specialization constant telling us if the surface is U2F10F10F10
+    spv::Id is_u2f10f10f10_constant = 0;
+
+    // Fragment shaders: the pixel's integer position on the render target at the Vita's resolution (uvec2), read through
+    // the global registers g23 (x) and g24 (y)
+    spv::Id pixel_position = 0;
 };
 
 using Coord = std::pair<spv::Id, int>;

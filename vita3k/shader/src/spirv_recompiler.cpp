@@ -405,6 +405,23 @@ static void create_fragment_inputs(spv::Builder &b, SpirvShaderParameters &param
     translation_state.interfaces.push_back(current_coord);
     translation_state.frag_coord_id = current_coord;
 
+    {
+        // the pixel's position for the global registers g23 and g24 (see utils::load); a fragment shader of Killzone
+        // Mercenary computes the addresses of its memory stores from them
+        // (the hardware gives the position within the tile, and the tile's position in g43; here g43 reads 0)
+        const spv::Id u32 = b.makeUintType(32);
+        const spv::Id v2 = b.makeVectorType(f32, 2);
+        const spv::Id uv2 = b.makeVectorType(u32, 2);
+        spv::Id coord = b.createLoad(current_coord, spv::NoPrecision);
+        coord = b.createOp(spv::OpVectorShuffle, v2, { { true, coord }, { true, coord }, { false, 0 }, { false, 1 } });
+        spv::Id res_multiplier = utils::create_access_chain(b, spv::StorageClassUniform, translation_state.render_info_id, { b.makeIntConstant(FRAG_UNIFORM_res_multiplier) });
+        res_multiplier = b.createLoad(res_multiplier, spv::NoPrecision);
+        coord = b.createBinOp(spv::OpFDiv, v2, coord, b.createCompositeConstruct(v2, { res_multiplier, res_multiplier }));
+        coord = b.createBuiltinCall(v2, utils.std_builtins, GLSLstd450Floor, { coord });
+        parameters.pixel_position = b.createVariable(spv::NoPrecision, spv::StorageClassPrivate, uv2, "pixel_position");
+        b.createStore(b.createUnaryOp(spv::OpConvertFToU, uv2, coord), parameters.pixel_position);
+    }
+
     // It may actually be total fragments input
     for (size_t i = 0; i < vertex_varyings_ptr->varyings_count; i++, descriptor++) {
         // 4 bit flag indicates a PA!
@@ -1115,6 +1132,12 @@ static SpirvShaderParameters create_parameters(spv::Builder &b, const SceGxmProg
             b.addDecoration(spv_params.is_srgb_constant, spv::DecorationSpecId, (int)GAMMA_CORRECTION_SPECIALIZATION_ID);
             b.addName(spv_params.is_srgb_constant, "is_srgb");
         }
+        if (program.is_frag_color_used() && translation_state.is_vulkan) {
+            // layout (constant_id = U2F10F10F10_SPECIALIZATION_ID) const bool is_u2f10f10f10 = false;
+            spv_params.is_u2f10f10f10_constant = b.makeBoolConstant(false, true);
+            b.addDecoration(spv_params.is_u2f10f10f10_constant, spv::DecorationSpecId, (int)U2F10F10F10_SPECIALIZATION_ID);
+            b.addName(spv_params.is_u2f10f10f10_constant, "is_u2f10f10f10");
+        }
     }
 
     spv_params.render_info_id = translation_state.render_info_id;
@@ -1510,6 +1533,36 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
         const spv::Id bv4 = b.makeVectorType(b.makeBoolType(), 4);
         const spv::Id bad = b.createBinOp(spv::OpLogicalOr, bv4, b.createUnaryOp(spv::OpIsNan, bv4, color), b.createUnaryOp(spv::OpIsInf, bv4, color));
         color = b.createTriOp(spv::OpSelect, v4, bad, utils::make_uniform_vector_from_type(b, v4, 0.0f), color);
+    }
+
+    // the surface is RGBA16F in place of U2F10F10F10: store what the U2F10F10F10 surface would hold (shaders compare
+    // its 2-bit alpha with 1: Killzone Mercenary classifies the pixels of its particle composite that way)
+    if (parameters.is_u2f10f10f10_constant != 0) {
+        const spv::Id f32 = b.makeFloatType(32);
+        const spv::Id v4 = b.makeVectorType(f32, 4);
+        const spv::Id v3 = b.makeVectorType(f32, 3);
+        const spv::Id bv4 = b.makeVectorType(b.makeBoolType(), 4);
+        spv::Id rgb = b.createOp(spv::OpVectorShuffle, v3, { { true, color }, { true, color }, { false, 0 }, { false, 1 }, { false, 2 } });
+        // unsigned 10-bit float: 5-bit exponent (bias 15), 5-bit mantissa, no sign, largest value 64512
+        rgb = b.createBuiltinCall(v3, utils.std_builtins, GLSLstd450FClamp,
+            { rgb, utils::make_uniform_vector_from_type(b, v3, 0.0f), utils::make_uniform_vector_from_type(b, v3, 64512.0f) });
+        spv::Id exponent = b.createBuiltinCall(v3, utils.std_builtins, GLSLstd450FMax, { rgb, utils::make_uniform_vector_from_type(b, v3, 1.0f / 16384.0f) });
+        exponent = b.createBuiltinCall(v3, utils.std_builtins, GLSLstd450Floor, { b.createBuiltinCall(v3, utils.std_builtins, GLSLstd450Log2, { exponent }) });
+        const spv::Id step = b.createBuiltinCall(v3, utils.std_builtins, GLSLstd450Exp2,
+            { b.createBinOp(spv::OpFSub, v3, exponent, utils::make_uniform_vector_from_type(b, v3, 5.0f)) });
+        rgb = b.createBinOp(spv::OpFMul, v3,
+            b.createBuiltinCall(v3, utils.std_builtins, GLSLstd450RoundEven, { b.createBinOp(spv::OpFDiv, v3, rgb, step) }), step);
+        // 2-bit unsigned normalized alpha
+        spv::Id alpha = b.createCompositeExtract(color, f32, 3);
+        alpha = b.createBuiltinCall(f32, utils.std_builtins, GLSLstd450FClamp, { alpha, b.makeFloatConstant(0.0f), b.makeFloatConstant(1.0f) });
+        alpha = b.createBinOp(spv::OpFDiv, f32,
+            b.createBuiltinCall(f32, utils.std_builtins, GLSLstd450RoundEven, { b.createBinOp(spv::OpFMul, f32, alpha, b.makeFloatConstant(3.0f)) }),
+            b.makeFloatConstant(3.0f));
+        const spv::Id stored = b.createCompositeConstruct(v4,
+            { b.createCompositeExtract(rgb, f32, 0), b.createCompositeExtract(rgb, f32, 1), b.createCompositeExtract(rgb, f32, 2), alpha });
+        const spv::Id flag = parameters.is_u2f10f10f10_constant;
+        const spv::Id cond = b.createCompositeConstruct(bv4, { flag, flag, flag, flag });
+        color = b.createTriOp(spv::OpSelect, v4, cond, stored, color);
     }
 
     if (program.is_frag_color_used() && features.should_use_shader_interlock()) {

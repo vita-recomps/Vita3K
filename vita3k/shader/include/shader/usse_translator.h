@@ -839,6 +839,18 @@ private:
     const SceGxmProgram &m_program;
 
     const FeatureState &m_features;
+
+    // the last VPCK into 8- or 16-bit integers (FeatureState::vpck_zero_fill keeps the lanes it wrote when the next
+    // instruction packs into the rest of the same register)
+    struct LastIntegerPack {
+        bool valid = false;
+        usse::USSEOffset pc = 0;
+        bool second_program = false;
+        usse::RegisterBank bank = usse::RegisterBank::INVALID;
+        uint32_t num = 0;
+        usse::DataType type = usse::DataType::UNK;
+        usse::Imm4 mask = 0;
+    } m_last_integer_pack;
 };
 
 constexpr int sgx543_pc_bits = 20;

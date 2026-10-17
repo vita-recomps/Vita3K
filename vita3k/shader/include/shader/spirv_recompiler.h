@@ -33,11 +33,19 @@ static constexpr int MASK_TEXTURE_SLOT_IMAGE = 1;
 static constexpr int COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE = 3;
 // 15 (ss-delta): depth clamped by the pipeline when supported, not in the vertex shader
 // 16 (ss-delta): USSE min/max ignore a NaN operand
-static constexpr uint32_t CURRENT_VERSION = 16;
+// 17 (vekta-mercenary): U2F10F10F10 colour output emulated behind a specialization constant
+// 18 (vekta-mercenary): fragment shaders read the pixel's position from the global registers g23 and g24
+// 19 (vekta-mercenary): with vpck_zero_fill, a pack keeps the lanes the previous pack into the same register wrote
+static constexpr uint32_t CURRENT_VERSION = 19;
 // fragment shader using the rendering surface as a storage image (because of shader interlock) have a line
 // layout (constant_id = GAMMA_CORRECTION_SPECIALIZATIO_ID) const bool is_srgb = false;
 // Setting this constant to true performs gamma correction in the shader
 static constexpr uint32_t GAMMA_CORRECTION_SPECIALIZATION_ID = 0;
+// fragment shaders writing a colour (Vulkan) have a line
+// layout (constant_id = U2F10F10F10_SPECIALIZATION_ID) const bool is_u2f10f10f10 = false;
+// Setting it to true stores the colour as a U2F10F10F10 surface would (the surface itself is RGBA16F): RGB rounded to
+// unsigned 10-bit floats, alpha clamped to [0, 1] and rounded to 2 bits
+static constexpr uint32_t U2F10F10F10_SPECIALIZATION_ID = 1;
 
 enum struct Target {
     GLSLOpenGL,
