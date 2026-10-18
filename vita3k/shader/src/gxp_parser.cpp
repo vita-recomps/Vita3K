@@ -228,6 +228,34 @@ ProgramInput get_program_input(const SceGxmProgram &program) {
         }
     }
 
+    // a buffer the program has loaded into registers (2 bits per buffer in buffer_flags, 0x1: registers) fills its
+    // container's registers even when no uniform parameter names it: Killzone Mercenary passes each draw's light
+    // indices in such a one-word buffer, and without it every lit surface used light 0's data
+    for (uint32_t index = 0; index < 14; index++) {
+        if (!((program.buffer_flags >> (2 * index)) & 0x1))
+            continue;
+        const SceGxmProgramParameterContainer *container = gxp::get_container_by_index(program, static_cast<uint16_t>(index));
+        if (!container || container->size_in_f32 == 0)
+            continue;
+        if (uniform_buffers.contains(index)) {
+            // declared only as a uniform buffer parameter (read through memory): its registers are loaded too
+            UniformBuffer &declared = uniform_buffers.at(index);
+            if (declared.reg_block_size == 0) {
+                declared.reg_block_size = container->size_in_f32;
+                declared.reg_start_offset = container->base_sa_offset;
+                declared.size = std::max(declared.size, static_cast<uint32_t>(container->size_in_f32));
+            }
+            continue;
+        }
+        UniformBuffer buffer;
+        buffer.index = index;
+        buffer.reg_block_size = container->size_in_f32;
+        buffer.reg_start_offset = container->base_sa_offset;
+        buffer.rw = false;
+        buffer.size = container->size_in_f32;
+        uniform_buffers.emplace(index, buffer);
+    }
+
     for (auto &[index, buffer] : uniform_buffers) {
         static constexpr std::uint32_t MAXIMUM_GXP_ARRAY_SIZE = 1024;
         if ((((investigated_ub & (1 << index)) == 0) && seems_symbols_stripped) || (buffer.size == MAXIMUM_GXP_ARRAY_SIZE)) {
