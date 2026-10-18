@@ -50,6 +50,8 @@ struct Hooks {
     std::function<void(const SDL_Event &event)> on_event;
     // Every pass of the event loop (about 60 per second), after the runtime metrics are updated
     std::function<void()> on_tick;
+    // Create the window hidden: a run nobody watches (a game's front end writing its modules)
+    bool hidden_window = false;
 };
 
 // Boots launch_request in an SDL window and runs it until the app exits or the window is closed,

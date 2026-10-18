@@ -192,7 +192,8 @@ int run(Profile &profile, int argc, char *argv[]) {
     //                                install a game dump (app, patch, DLC) into it; a pkg needs its
     //                                licence, except a patch or add-on whose game's licence is there
     //   --dump-elfs <seconds>        run the game that long, writing every module as loaded to
-    //                                <id>/elfdumps/ (the input for recompiling), then quit
+    //                                <id>/elfdumps/ (the input for recompiling), then quit; the
+    //                                window stays hidden and the sound off (a setup's step)
     //   --vita-fs <folder>           the Vita file system to use instead of the settings file's
     //   --write-ini <file>           write the default settings file there and quit
     //   --player <1-4>               (games with Ad Hoc Play) a copy of the game for another player,
@@ -312,7 +313,8 @@ int run(Profile &profile, int argc, char *argv[]) {
     cfg.resolution_multiplier = settings.scale;
     cfg.v_sync = settings.vsync;
     cfg.screen_filter = settings.filter;
-    cfg.audio_volume = settings.volume;
+    // --dump-elfs runs the game unseen (a setup's step): no sound either
+    cfg.audio_volume = dump_elfs_seconds > 0 ? 0 : settings.volume;
     if (profile.hooks.configure)
         profile.hooks.configure(ctx, cfg);
 
@@ -501,10 +503,11 @@ int run(Profile &profile, int argc, char *argv[]) {
         }
         SDL_SetWindowSize(window, 960 * settings.window_scale, 544 * settings.window_scale);
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-        if (settings.fullscreen)
+        if (settings.fullscreen && !hooks.hidden_window)
             SDL_SetWindowFullscreen(window, true);
         emuenv.touch.renderer_focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
     };
+    hooks.hidden_window = dump_elfs_seconds > 0;
     hooks.on_event = [&](const SDL_Event &event) {
         if (!window)
             return;

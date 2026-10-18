@@ -201,6 +201,8 @@ int run(EmuEnvState &emuenv, app::AppSessionController &session, AppLaunchReques
 #ifndef __ANDROID__
         window_flags |= SDL_WINDOW_RESIZABLE;
 #endif
+        if (hooks.hidden_window)
+            window_flags |= SDL_WINDOW_HIDDEN;
         if (emuenv.backend_renderer == renderer::Backend::OpenGL) {
             window_flags |= SDL_WINDOW_OPENGL;
             if (!set_gl_attributes()) {
