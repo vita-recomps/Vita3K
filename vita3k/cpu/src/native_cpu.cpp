@@ -38,7 +38,7 @@ void NativeCPU::missing_native_code(uint32_t pc) {
     {
         const std::lock_guard<std::mutex> lock(m);
         if (reported.insert(pc).second)
-            LOG_CRITICAL("NativeCPU: no native code for the guest code at {} (thread {}). It needs recompiling; meanwhile ss-delta.ini [recompiled] jit = true runs it on the JIT", log_hex(pc), parent->thread_id);
+            LOG_CRITICAL("NativeCPU: no native code for the guest code at {} (thread {}). It needs recompiling; meanwhile the game's .ini [recompiled] jit = true runs it on the JIT (a build with dynarmic)", log_hex(pc), parent->thread_id);
     }
     throw AotUnwind{};
 }
@@ -95,9 +95,16 @@ void NativeCPU::aot_call_native(uint32_t, AotFn fn) {
 }
 
 void NativeCPU::aot_call_guest(uint32_t target) {
-    const AotFn fn = aot_lookup(target);
-    if (!fn)
-        missing_native_code(target & ~1u);
+    AotFn fn = aot_lookup(target);
+    if (!fn) {
+        // a call into a function's middle, at one of its resume points (a hand-written routine's
+        // helper reached through a computed address): the function starts there
+        fn = aot_lookup_resume(target);
+        if (!fn)
+            missing_native_code(target & ~1u);
+        aot_count_resume_entry();
+        guest.resume = target & ~1u;
+    }
     const uint32_t ret = guest.r[14];
     fn(&guest);
     guest.r[15] = ret;
