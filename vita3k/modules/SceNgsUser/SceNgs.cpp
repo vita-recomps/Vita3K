@@ -27,6 +27,7 @@
 #include <util/tracy.h>
 
 #include <cstring>
+#include <mutex>
 
 TRACY_MODULE_NAME(SceNgs);
 
@@ -464,9 +465,12 @@ EXPORT(SceInt32, sceNgsSystemRelease, ngs::System *system) {
     return SCE_NGS_OK;
 }
 
-EXPORT(int, sceNgsSystemSetFlags) {
-    TRACY_FUNC(sceNgsSystemSetFlags);
-    return UNIMPLEMENTED();
+EXPORT(int, sceNgsSystemSetFlags, SceUID system_handle, const uint32_t flags) {
+    TRACY_FUNC(sceNgsSystemSetFlags, system_handle, flags);
+    // the flags (debug checks, by the SDK's names) change nothing Vita3K does: accepted and noted once
+    static std::once_flag logged;
+    std::call_once(logged, [flags] { LOG_INFO("sceNgsSystemSetFlags: 0x{:x} (accepted, no effect)", flags); });
+    return SCE_NGS_OK;
 }
 
 EXPORT(int, sceNgsSystemSetParamErrorCallback) {

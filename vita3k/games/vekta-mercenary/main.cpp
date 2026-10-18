@@ -24,6 +24,9 @@
 #include "../../game-frontend/profile.h"
 
 #include <config/state.h>
+#include <emuenv/state.h>
+#include <ngs/state.h>
+#include <util/log.h>
 
 // provides WinMain for the windowed executable, which calls main below
 #include <SDL3/SDL_main.h>
@@ -34,6 +37,18 @@ namespace layout = game_frontend::layout;
 
 constexpr const char *TITLE_ID = "PCSF00403";
 
+// [audio]: the shared volume, and the NGS modules Vita3K left out (ngs::State::Effects)
+game_frontend::IniSection audio_layout() {
+    using Kind = game_frontend::SettingSpec::Kind;
+    game_frontend::IniSection section = layout::audio();
+    section.settings.push_back({ "effects", Kind::Bool, "true", 0, 0, {},
+        "The game's filters, equalizer, compressor and distortion (muffled sound through walls, the\n"
+        "mix's dynamics; false: the unprocessed sound of earlier builds, for comparison). Read when the\n"
+        "game starts." });
+    section.settings.back().title = "Sound effects (filters, compressor)";
+    return section;
+}
+
 game_frontend::IniLayout ini_layout() {
     const std::string id = "vekta-mercenary", exe = "vekta-mercenary.exe";
     return {
@@ -43,7 +58,7 @@ game_frontend::IniLayout ini_layout() {
             { "display", "",
                 { layout::scale(), layout::window_scale(), layout::fullscreen(id, exe), layout::vsync(),
                     layout::filter(), layout::mipmaps(false) } },
-            layout::audio(),
+            audio_layout(),
             { "controls", "",
                 { { "pstv_mode", game_frontend::SettingSpec::Kind::Bool, "false", 0, 0, {},
                     "Run as a PS TV, where the game takes a DualShock and has no touchscreens (its\n"
@@ -79,6 +94,11 @@ int main(int argc, char *argv[]) {
         cfg.depth_store_scenes = true;
         // a PS TV: pads on the external ports, the PS TV model (SceCtrl, SceSysmem)
         cfg.pstv_mode = ctx.settings->values.get_bool("controls.pstv_mode");
+    };
+    profile.hooks.before_run = [](game_frontend::Context &ctx) {
+        const bool effects = ctx.settings->values.get_bool("audio.effects");
+        ctx.emuenv->ngs.effects.dsp = effects;
+        LOG_INFO("audio effects (filters, equalizer, compressor, distortion): {}", effects ? "on" : "off");
     };
     return game_frontend::run(profile, argc, argv);
 }

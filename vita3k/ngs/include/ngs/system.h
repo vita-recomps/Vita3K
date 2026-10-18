@@ -339,6 +339,7 @@ struct System : public MempoolObject {
     int32_t granularity;
     int32_t sample_rate;
     bool reverb = false; // State::Effects::reverb when the system was created
+    bool dsp = false; // State::Effects::dsp when the system was created
 
     VoiceScheduler voice_scheduler;
 
