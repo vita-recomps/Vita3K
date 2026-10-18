@@ -57,6 +57,7 @@
 #include "patch/patch.h"
 
 #include <memory>
+#include <mutex>
 #include <regex>
 
 typedef std::shared_ptr<mz_zip_archive> ZipPtr;
@@ -428,6 +429,46 @@ static void do_patches(MemState &mem, const Patches &patches, const SceKernelMod
 
 static ExitCode load_app_impl(SceUID &main_module_id, EmuEnvState &emuenv, const AppLaunchRequest &launch_request) {
     const auto call_import = [&emuenv](CPUState &cpu, uint32_t nid, SceUID thread_id) {
+        // VITA3K_STACK_AT=<nid hex>[,...] logs, for the first VITA3K_STACK_N (default 4) calls of each of those
+        // imports, the thread, LR and the words in the 4 KB above SP that look like Thumb return addresses into
+        // the eboot (0x81000000-0x81a93000): call chains for finding a game's loops (stale words included)
+        static std::map<uint32_t, int> stack_at = [] {
+            std::map<uint32_t, int> m;
+            if (const char *v = std::getenv("VITA3K_STACK_AT")) {
+                std::string s = v;
+                size_t p = 0;
+                while (p < s.size()) {
+                    const size_t c = s.find(',', p);
+                    m[std::stoul(s.substr(p, c - p), nullptr, 16)] = 0;
+                    if (c == std::string::npos)
+                        break;
+                    p = c + 1;
+                }
+            }
+            return m;
+        }();
+        static const int stack_n = std::getenv("VITA3K_STACK_N") ? std::atoi(std::getenv("VITA3K_STACK_N")) : 4;
+        if (!stack_at.empty()) {
+            static std::mutex stack_at_mutex;
+            const auto it = stack_at.find(nid);
+            const bool log = it != stack_at.end() && [&] {
+                const std::lock_guard<std::mutex> lock(stack_at_mutex);
+                return it->second++ < stack_n;
+            }();
+            if (log) {
+                const uint32_t sp = read_sp(cpu);
+                std::string ret;
+                for (uint32_t a = sp; a < sp + 0x1000; a += 4) {
+                    if ((a & 0xfff) == 0 || a == sp)
+                        if (!is_valid_addr(emuenv.mem, a))
+                            break;
+                    const uint32_t w = *Ptr<uint32_t>(a).get(emuenv.mem);
+                    if ((w & 1) && w >= 0x81000000 && w < 0x81a93000)
+                        ret += fmt::format(" {:x}@{:x}", w & ~1u, a - sp);
+                }
+                LOG_INFO("STACK_AT nid {:08x} call {} thread {} lr {:08x}:{}", nid, it->second, thread_id, read_lr(cpu), ret);
+            }
+        }
         ::call_import(emuenv, cpu, nid, thread_id);
     };
     emuenv.kernel.process_exit_callback = [&emuenv](int res, std::optional<AppLaunchRequest> relaunch) {

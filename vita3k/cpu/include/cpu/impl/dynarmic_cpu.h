@@ -59,6 +59,7 @@ class DynarmicCPU : public CPUInterface, public AotOwner {
     std::unique_ptr<AotShadow> shadow;
     uint64_t diff_counter = 0;
     bool aot_diff_shadow(uint32_t pc, AotShadowResult &out);
+    bool aot_diff_shadow_checked(uint32_t pc, AotShadowResult &out);
     void aot_diff_compare(uint32_t pc, const AotShadowResult &s);
     bool aot_boundary();
     void aot_run_until_sentinel(uint32_t target);

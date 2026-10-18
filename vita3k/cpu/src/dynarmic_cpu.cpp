@@ -16,6 +16,9 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 #include "cpu/common.h"
+#include <algorithm>
+#include <map>
+#include <sstream>
 #include <cpu/aot.h>
 #include <cpu/impl/aot_hooks.h>
 #include <cpu/impl/dynarmic_cpu.h>
@@ -587,6 +590,70 @@ bool DynarmicCPU::aot_diff_shadow(uint32_t pc, AotShadowResult &out) {
     return !s.abort_reason;
 }
 
+namespace {
+
+// SSD_AOT_DIFF_ONLY=lo-hi[,...] (hex, end exclusive): with SSD_AOT_DIFF set, check every call into
+// those ranges and no other (one function's mismatch rate, or a bisect over its callees)
+const std::vector<std::pair<uint32_t, uint32_t>> &aot_diff_only() {
+    static const std::vector<std::pair<uint32_t, uint32_t>> ranges = [] {
+        std::vector<std::pair<uint32_t, uint32_t>> v;
+        if (const char *const env = std::getenv("SSD_AOT_DIFF_ONLY")) {
+            std::stringstream list(env);
+            std::string item;
+            while (std::getline(list, item, ',')) {
+                const auto dash = item.find('-');
+                if (dash != std::string::npos)
+                    v.emplace_back(std::stoul(item.substr(0, dash), nullptr, 16), std::stoul(item.substr(dash + 1), nullptr, 16));
+            }
+        }
+        return v;
+    }();
+    return ranges;
+}
+
+// whether this call is checked: every Nth (SSD_AOT_DIFF=N), or each one in SSD_AOT_DIFF_ONLY's ranges
+bool aot_diff_sampled(uint64_t &counter, uint64_t interval, uint32_t pc) {
+    if (!interval)
+        return false;
+    const auto &only = aot_diff_only();
+    if (only.empty())
+        return ++counter % interval == 0;
+    return std::any_of(only.begin(), only.end(), [pc](const auto &r) { return r.first <= pc && pc < r.second; });
+}
+
+} // namespace
+
+// The shadow's run of the call, as aot_diff_shadow. With SSD_AOT_DIFF_SELF=1 the shadow runs it twice:
+// a call whose two runs disagree reads what other threads change meanwhile (a counter, a job's
+// state), so native code would differ from the JIT for the same reason; it is skipped as "racy"
+// instead of compared, and what mismatches is left to translation faults.
+bool DynarmicCPU::aot_diff_shadow_checked(uint32_t pc, AotShadowResult &out) {
+    if (!aot_diff_shadow(pc, out))
+        return false;
+    static const bool self_check = std::getenv("SSD_AOT_DIFF_SELF") != nullptr;
+    if (!self_check)
+        return true;
+    AotShadowResult again;
+    if (!aot_diff_shadow(pc, again))
+        return false;
+    bool same = out.regs == again.regs && out.ext == again.ext && out.journal.size() == again.journal.size();
+    if (same) {
+        std::map<uint32_t, uint64_t> first;
+        for (const auto &w : out.journal)
+            first[w.addr] = w.final_value;
+        for (const auto &w : again.journal) {
+            const auto it = first.find(w.addr);
+            if (it == first.end() || it->second != w.final_value) {
+                same = false;
+                break;
+            }
+        }
+    }
+    if (!same)
+        aot_count_diff(pc, false, false, "racy");
+    return same;
+}
+
 // Compares the native call that just returned with the shadow's run of it
 void DynarmicCPU::aot_diff_compare(uint32_t pc, const AotShadowResult &s) {
     // native code's calls into the JIT and the shadow's own call return to the sentinel, so a
@@ -713,7 +780,7 @@ bool DynarmicCPU::aot_boundary() {
     // return to the sentinel)
     const uint64_t diff_interval = aot_diff_interval();
     AotShadowResult shadow_result;
-    const bool diff = !resume && diff_interval && ++diff_counter % diff_interval == 0 && aot_diff_shadow(pc, shadow_result);
+    const bool diff = !resume && aot_diff_sampled(diff_counter, diff_interval, pc) && aot_diff_shadow_checked(pc, shadow_result);
     aot_sync_to_guest();
     if (resume)
         guest.resume = pc;
@@ -843,7 +910,7 @@ void DynarmicCPU::aot_call_import(uint32_t stub) {
 // functions the JIT enters.
 void DynarmicCPU::aot_call_native(uint32_t addr, AotFn fn) {
     const uint64_t diff_interval = aot_diff_interval();
-    if (!diff_interval || ++diff_counter % diff_interval != 0) {
+    if (!aot_diff_sampled(diff_counter, diff_interval, addr & ~1u)) {
         fn(&guest);
         return;
     }
@@ -852,7 +919,7 @@ void DynarmicCPU::aot_call_native(uint32_t addr, AotFn fn) {
     aot_sync_from_guest();
     set_pc(addr);
     AotShadowResult shadow_result;
-    const bool diff = aot_diff_shadow(addr & ~1u, shadow_result);
+    const bool diff = aot_diff_shadow_checked(addr & ~1u, shadow_result);
     fn(&guest);
     if (diff)
         aot_diff_compare(addr & ~1u, shadow_result);
