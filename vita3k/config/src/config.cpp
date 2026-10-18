@@ -170,6 +170,7 @@ static void check_members(Config &self, const Config &rhs) {
     self.shader_cache_read_only = rhs.shader_cache_read_only;
     self.vpck_zero_fill = rhs.vpck_zero_fill;
     self.exp_log_base2 = rhs.exp_log_base2;
+    self.clamp_color_varyings = rhs.clamp_color_varyings;
     self.zero_init_registers = rhs.zero_init_registers;
     self.depth_store_scenes = rhs.depth_store_scenes;
     self.app_args = rhs.app_args;

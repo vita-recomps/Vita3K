@@ -65,6 +65,10 @@ struct Config {
     // shaders: the USSE's EXP and LOG are base 2, as on the hardware, rather than base e
     // (FeatureState::exp_log_base2); set by a game's front end, not saved in config.yml
     bool exp_log_base2 = false;
+    // shaders: the COLOR0 and COLOR1 vertex outputs are clamped to [0, 1], as Soul Sacrifice Delta's and
+    // Shinobido 2's colours on the Vita show (FeatureState::clamp_color_varyings); per game until the others
+    // are checked; set by a game's front end, not saved in config.yml
+    bool clamp_color_varyings = false;
     // shaders: the register banks start at zero; reading a register before writing it is undefined in
     // SPIR-V, and a GPU compiler may let that spread into what is computed from it
     // (FeatureState::zero_init_registers); set by a game's front end, not saved in config.yml

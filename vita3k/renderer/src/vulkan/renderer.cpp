@@ -983,6 +983,11 @@ void VKState::late_init(const Config &cfg, const std::string_view game_id, MemSt
     LOG_INFO_IF(features.vpck_zero_fill, "Shaders: packs into 8- and 16-bit integers zero the rest of each register");
     features.exp_log_base2 = cfg.exp_log_base2;
     LOG_INFO_IF(features.exp_log_base2, "Shaders: EXP and LOG are base 2");
+    features.clamp_color_varyings = cfg.clamp_color_varyings;
+    // VITA3K_CLAMP_COLOR_VARYINGS=0 or 1 overrides the game's choice (debugging aid)
+    if (const char *v = std::getenv("VITA3K_CLAMP_COLOR_VARYINGS"); v && (v[0] == '0' || v[0] == '1'))
+        features.clamp_color_varyings = v[0] == '1';
+    LOG_INFO_IF(features.clamp_color_varyings, "Shaders: COLOR0 and COLOR1 vertex outputs are clamped to [0, 1]");
     features.zero_init_registers = cfg.zero_init_registers;
     LOG_INFO_IF(features.zero_init_registers, "Shaders: registers start at zero");
     features.depth_store_scenes = cfg.depth_store_scenes;

@@ -1928,6 +1928,14 @@ static spv::Function *make_vert_finalize_function(spv::Builder &b, const SpirvSh
                 b.addDecoration(out_var, spv::DecorationBuiltIn, spv::BuiltInPointSize);
                 b.createStore(o_val, out_var);
             } else {
+                // FeatureState::clamp_color_varyings (per game): COLOR0 and COLOR1 saturate. Soul Sacrifice Delta's fog
+                // colour (ambient light times the fog colour) reaches 3 in blue in ST02A, which the Vita shows as a
+                // grey haze and an unclamped float as a blue one
+                if (features.clamp_color_varyings && (vo == SCE_GXM_VERTEX_PROGRAM_OUTPUT_COLOR0 || vo == SCE_GXM_VERTEX_PROGRAM_OUTPUT_COLOR1)) {
+                    const spv::Id zero4 = b.makeCompositeConstant(out_type, std::vector<spv::Id>(4, b.makeFloatConstant(0.0f)));
+                    const spv::Id one4 = b.makeCompositeConstant(out_type, std::vector<spv::Id>(4, b.makeFloatConstant(1.0f)));
+                    o_val = b.createBuiltinCall(out_type, utils.std_builtins, GLSLstd450FClamp, { o_val, zero4, one4 });
+                }
                 b.createStore(o_val, out_var);
             }
 

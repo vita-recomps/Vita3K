@@ -33,6 +33,7 @@ struct FeatureState {
     bool support_depth_clamp = false; ///< Is depth clamped per fragment by the pipeline (instead of per vertex in the shader)?
     bool vpck_zero_fill = false; ///< Does a pack into 8- or 16-bit integers zero the lanes it leaves out of each 32-bit register? (Config::vpck_zero_fill, per game)
     bool exp_log_base2 = false; ///< Are the USSE's EXP and LOG base 2, as on the hardware, rather than base e? (Config::exp_log_base2, per game)
+    bool clamp_color_varyings = false; ///< Are the COLOR0 and COLOR1 vertex outputs clamped to [0, 1]? (Config::clamp_color_varyings, per game)
     bool zero_init_registers = false; ///< Do the shaders' register banks start at zero instead of undefined? (Config::zero_init_registers, per game)
     bool depth_store_scenes = false; ///< Does a scene that doesn't store its depth-stencil surface leave it unchanged? (Config::depth_store_scenes, per game)
 

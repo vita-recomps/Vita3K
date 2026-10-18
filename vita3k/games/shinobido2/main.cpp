@@ -21,6 +21,7 @@
 #include "../../game-frontend/profile.h"
 #include "saves.h"
 
+#include <config/state.h>
 #include <display/state.h>
 #include <emuenv/state.h>
 #include <mem/functions.h>
@@ -379,6 +380,11 @@ int main(int argc, char *argv[]) {
             SDL_ShowSimpleMessageBox(ok ? SDL_MESSAGEBOX_INFORMATION : SDL_MESSAGEBOX_ERROR, ctx.window_name.c_str(),
                 ("Save: " + message).c_str(), nullptr);
         return ok ? 0 : 1;
+    };
+    profile.hooks.configure = [](game_frontend::Context &, Config &cfg) {
+        // COLOR0/COLOR1 clamped to [0, 1]: without it the first mission's walls are near black and the
+        // scene is tinted blue; with it the colours match the Vita's (as ss-delta's fog)
+        cfg.clamp_color_varyings = true;
     };
     profile.hooks.before_run = [](game_frontend::Context &ctx) {
         const bool effects = ctx.settings->values.get_bool("audio.effects");

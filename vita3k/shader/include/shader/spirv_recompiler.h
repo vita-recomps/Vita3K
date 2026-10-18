@@ -39,7 +39,8 @@ static constexpr int COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE = 3;
 // 20 (vekta-mercenary): shader interlock applies the fixed-function blend and colour mask; U2F10F10F10 for every fragment shader
 // 21 (vekta-mercenary): a texture that is part of a surface is sampled within that part
 // 22 (vekta-mercenary): buffers loaded into registers fill them even when no uniform parameter names them
-static constexpr uint32_t CURRENT_VERSION = 22;
+// 23 (ss-delta): COLOR0 and COLOR1 vertex outputs clamped to [0, 1] with clamp_color_varyings
+static constexpr uint32_t CURRENT_VERSION = 23;
 // fragment shader using the rendering surface as a storage image (because of shader interlock) have a line
 // layout (constant_id = GAMMA_CORRECTION_SPECIALIZATIO_ID) const bool is_srgb = false;
 // Setting this constant to true performs gamma correction in the shader

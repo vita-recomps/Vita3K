@@ -326,6 +326,9 @@ int main(int argc, char *argv[]) {
         net_utils::set_local_adhoc(values.get("multiplayer.network") == "lan" ? 0 : ctx.player);
         cfg.adhoc_addr = values.get_int("multiplayer.adapter");
         cfg.shader_cache_read_only = ctx.player > 1;
+        // the fog colour leaves the vertex shaders as COLOR0/COLOR1 and goes above 1 (blue haze in ST02A
+        // without the clamp; grey, as on the Vita, with it)
+        cfg.clamp_color_varyings = true;
         // [multiplayer] gamepad: one gamepad per copy of the game, read also while its window is in
         // the background
         if (values.get_int("multiplayer.gamepad") > 0)
