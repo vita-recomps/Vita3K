@@ -492,21 +492,30 @@ if(WIN32)
 		target_link_libraries(${target} PRIVATE game-frontend)
 		set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 		if(VITA3K_GAMES_ONLY)
-			# what Vita3K's own build would have put next to the executables
-			add_custom_command(TARGET ${target} POST_BUILD
-				COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../data" "$<TARGET_FILE_DIR:${target}>/data"
-				COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/shaders-builtin" "$<TARGET_FILE_DIR:${target}>/shaders-builtin"
-				COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/icons" "$<TARGET_FILE_DIR:${target}>/icons"
-				COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/COPYING.txt" "$<TARGET_FILE_DIR:${target}>/COPYING.txt")
-			if(USE_DISCORD_RICH_PRESENCE)
-				add_custom_command(TARGET ${target} POST_BUILD
-					COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/external/discord_game_sdk/lib/x86_64/discord_game_sdk.dll" "$<TARGET_FILE_DIR:${target}>")
+			# what Vita3K's own build would have put next to the executables, copied once for every game:
+			# the games share their folder, and copies of the same directories from each game's
+			# post-build step ran in parallel and failed ("Permission denied" on shaders-builtin)
+			if(NOT TARGET games-runtime-files)
+				set(dir "$<TARGET_FILE_DIR:${target}>")
+				# before any game is linked, so the folder may not exist yet
+				set(copies
+					COMMAND ${CMAKE_COMMAND} -E make_directory "${dir}"
+					COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../data" "${dir}/data"
+					COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/shaders-builtin" "${dir}/shaders-builtin"
+					COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/icons" "${dir}/icons"
+					COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/COPYING.txt" "${dir}/COPYING.txt")
+				if(USE_DISCORD_RICH_PRESENCE)
+					list(APPEND copies
+						COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/external/discord_game_sdk/lib/x86_64/discord_game_sdk.dll" "${dir}")
+				endif()
+				if(EXISTS "${OPENSSL_ROOT_DIR}")
+					list(APPEND copies
+						COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_ROOT_DIR}/bin/libssl-4-x64.dll" "${dir}"
+						COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_ROOT_DIR}/bin/libcrypto-4-x64.dll" "${dir}")
+				endif()
+				add_custom_target(games-runtime-files ${copies})
 			endif()
-			if(EXISTS "${OPENSSL_ROOT_DIR}")
-				add_custom_command(TARGET ${target} POST_BUILD
-					COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_ROOT_DIR}/bin/libssl-4-x64.dll" "$<TARGET_FILE_DIR:${target}>"
-					COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_ROOT_DIR}/bin/libcrypto-4-x64.dll" "$<TARGET_FILE_DIR:${target}>")
-			endif()
+			add_dependencies(${target} games-runtime-files)
 		else()
 			# Vita3K's build copies data, shaders-builtin and the DLLs into the shared folder
 			add_dependencies(${target} vita3k)
