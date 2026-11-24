@@ -892,7 +892,7 @@ int run(Profile &profile, int argc, char *argv[]) {
             return;
         mouse_camera.configure(profile.stick_response, profile.stick_response_y.value_or(profile.stick_response),
             { static_cast<float>(settings.values.get_float("mouse.sensitivity")), settings.values.get_bool("mouse.invert_y") },
-            profile.camera_angles);
+            profile.camera_angles, profile.mouse_turn);
         std::vector<std::string> warnings;
         capture_keys = parse_keys(settings.values.get("mouse.capture_key"), "mouse.capture_key", warnings);
         if (report)

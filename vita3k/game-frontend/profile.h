@@ -106,6 +106,8 @@ struct Profile {
     // the camera's angles, for a game whose camera speeds up while the stick is held: the mouse camera
     // then counts what the camera really turned (MouseCamera::CameraAngles); empty: from the table
     MouseCamera::CameraAngles camera_angles;
+    // a game whose own code takes the mouse's motion (MouseCamera::DirectTurn); empty: the stick only
+    MouseCamera::DirectTurn mouse_turn;
     // Ad Hoc Play: --player 2-4 run more copies with their own Vita user, config and log
     bool multiplayer = false;
     // the executable has an icon resource with id 101 (its .rc); the window then uses it

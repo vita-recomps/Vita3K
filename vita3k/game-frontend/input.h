@@ -85,11 +85,17 @@ struct StickResponse {
 // table says) reads its camera's angles instead (CameraAngles): what the camera really turned since
 // the last tick is counted off, and the stick is held at full speed until the rest is less than about
 // half a tick's turn.
+// A game whose own code takes the mouse's motion (DirectTurn: utakata's eboot, through recompiler
+// overrides) turns its camera by exactly what the mouse moved, with no speed limit; the stick is used
+// only while the game's camera doesn't take it.
 class MouseCamera {
 public:
     // the camera's yaw and pitch in degrees, as the game holds them (growing with the stick pushed
     // right and down), or none when there is no camera to read
     using CameraAngles = std::function<std::optional<std::array<float, 2>>(EmuEnvState &)>;
+    // each tick: the degrees the mouse asked since the last tick (yaw right, pitch down; often 0, 0),
+    // given to the game; true when the game's camera takes them now, false to turn by the stick
+    using DirectTurn = std::function<bool(EmuEnvState &, float yaw, float pitch, uint64_t now_ns)>;
     struct Options {
         float sensitivity = 1.0f;
         bool invert_y = false;
@@ -107,7 +113,7 @@ public:
 
     // the yaw's response (x) and the pitch's (y), and the camera's angles when the game reads them
     void configure(const StickResponse &response_x, const StickResponse &response_y, const Options &options,
-        CameraAngles angles = {});
+        CameraAngles angles = {}, DirectTurn direct = {});
     // relative motion of the captured mouse, in counts
     void motion(float dx, float dy);
     // each tick: the stick into the controller's mouse state (CtrlState::mouse_state)
@@ -130,6 +136,7 @@ private:
     float stick_measured(Axis &axis, const StickResponse &response, float angle, float dt) const;
     StickResponse responses[2];
     CameraAngles angles;
+    DirectTurn direct;
     Options options;
     Axis axes[2];
     uint64_t last_ns = 0;

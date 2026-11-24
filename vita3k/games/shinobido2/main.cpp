@@ -23,6 +23,7 @@
 #include "saves.h"
 
 #include <config/state.h>
+#include <cpu/aot.h>
 #include <ctrl/state.h>
 #include <display/state.h>
 #include <emuenv/state.h>
@@ -37,6 +38,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -403,11 +405,20 @@ void update_frame_rate(EmuEnvState &emuenv, FrameRate &state) {
 // its scene manager at +0x1e4, and the manager the current scene at +4. While the first picture is
 // up, the scene is moved on to the opening movie (Start skips that, as on the Vita): data only, so
 // native code stays on.
+// State 8's entry starts the movie player (*0x81512598: init, then play); its per-frame part only waits
+// for the player's status (+0xc) to reach 2, the end. The write can race the game's own step from 0 to
+// 1, whose entry ends by clearing +0xc: state 8 is then never entered, the player never starts, and the
+// scene waits on a black screen forever (seen at 60 fps, where the scene runs twice as often). So the
+// skip checks its result: in state 8 with the entry taken and the player still idle (status 0), it
+// asks for the entry again.
 constexpr Address OPENING_SCENE_VTABLE = 0x81441534;
+constexpr Address MOVIE_PLAYER = 0x81512598;
 
 struct IntroSkip {
     bool done = false;
     int writes = 0;
+    int idle_ticks = 0; // ticks in state 8, entry taken, with the player idle
+    int reentries = 0;
 };
 
 void skip_intro_logos(EmuEnvState &emuenv, IntroSkip &state) {
@@ -416,15 +427,46 @@ void skip_intro_logos(EmuEnvState &emuenv, IntroSkip &state) {
     const int64_t app = read_guest(emuenv, 0x8146c2b0, 4);
     const int64_t manager = app > 0 ? read_guest(emuenv, static_cast<Address>(app) + 0x1e4, 4) : -1;
     const int64_t scene = manager > 0 ? read_guest(emuenv, static_cast<Address>(manager) + 4, 4) : -1;
-    if (scene <= 0 || read_guest(emuenv, static_cast<Address>(scene), 4) != OPENING_SCENE_VTABLE)
+    if (scene <= 0 || read_guest(emuenv, static_cast<Address>(scene), 4) != OPENING_SCENE_VTABLE) {
+        if (state.writes)
+            state.done = true; // the opening scene has ended (the title)
         return;
+    }
     const Address s = static_cast<Address>(scene);
     const int64_t current = read_guest(emuenv, s + 8, 4);
     if (current < 0)
         return;
-    if (current >= 8) {
+    if (current >= 8 && !state.writes) {
         state.done = true;
-        LOG_INFO("skip_intro: {}", state.writes ? "the boot logos skipped" : "the logos had already played");
+        LOG_INFO("skip_intro: the logos had already played");
+        return;
+    }
+    if (current == 8) {
+        const int64_t player = read_guest(emuenv, MOVIE_PLAYER, 4);
+        const int64_t status = player > 0 ? read_guest(emuenv, static_cast<Address>(player) + 0xc, 4) : -1;
+        if (read_guest(emuenv, s + 0xc, 1) != 0 || status < 0)
+            return; // the entry is still to come
+        if (status != 0) {
+            state.done = true;
+            LOG_INFO("skip_intro: the boot logos skipped{}", state.reentries ? fmt::format(" (state 8 entered again {} times)", state.reentries) : "");
+            return;
+        }
+        // the entry was lost, or the player didn't start: a quarter of a second's grace, then enter again
+        if (++state.idle_ticks < 15)
+            return;
+        state.idle_ticks = 0;
+        if (++state.reentries > 20) {
+            state.done = true;
+            LOG_WARN("skip_intro: the opening movie doesn't start");
+            return;
+        }
+        const uint8_t enter = 1;
+        std::memcpy(Ptr<uint8_t>(s + 0xc).get(emuenv.mem), &enter, 1);
+        return;
+    }
+    if (current > 8) {
+        state.done = true;
+        LOG_INFO("skip_intro: the boot logos skipped");
         return;
     }
     if (current > 1) {
@@ -579,6 +621,52 @@ std::optional<std::array<float, 2>> camera_angles(EmuEnvState &emuenv) {
     return std::array<float, 2>{ std::atan2(r[0], -r[2]) * degrees, std::asin(r[9]) * degrees };
 }
 
+// The mouse camera's own way into the game (utakata D16, overrides/eboot.json, an eboot with the
+// "mouse_camera" feature): the mouse's running totals in the page left over after the eboot's data,
+// +0 'UTMC', +4 yaw (right) and +8 pitch (down) in 1/1024 of a degree, which each camera that turns by
+// the right stick adds to its turn; +12 counts those cameras' updates. While it moves, the game takes
+// the mouse; when it stops (no such camera now), the mouse camera falls back to the stick.
+bool mouse_turn(EmuEnvState &emuenv, float yaw, float pitch, uint64_t now_ns) {
+    constexpr Address BOX = 0x819f6f00;
+    constexpr uint32_t MAGIC = 0x434d5455; // "UTMC"
+    constexpr uint64_t QUIET_NS = 200'000'000;
+    static bool has_feature = false;
+    static uint32_t seen_count = 0;
+    static uint64_t moved_ns = 0;
+    static double totals[2] = {};
+    if (!has_feature) {
+        has_feature = aot_module_has_feature("eboot", "mouse_camera");
+        if (!has_feature)
+            return false;
+        LOG_INFO("Mouse camera: the game's camera takes the mouse (eboot feature mouse_camera)");
+    }
+    if (!is_valid_addr(emuenv.mem, BOX) || !is_valid_addr(emuenv.mem, BOX + 15))
+        return false;
+    uint32_t *box = Ptr<uint32_t>(BOX).get(emuenv.mem);
+    const uint32_t count = std::atomic_ref<uint32_t>(box[3]).load(std::memory_order_relaxed);
+    if (count != seen_count) {
+        seen_count = count;
+        moved_ns = now_ns;
+    }
+    if (!moved_ns || now_ns - moved_ns > QUIET_NS)
+        return false;
+    if (box[0] != MAGIC) {
+        // the totals start where the game's own copy is (a new game run starts from zero)
+        totals[0] = static_cast<int32_t>(box[1]) / 1024.0;
+        totals[1] = static_cast<int32_t>(box[2]) / 1024.0;
+        std::atomic_ref<uint32_t>(box[0]).store(MAGIC, std::memory_order_release);
+    }
+    if (yaw != 0 || pitch != 0) {
+        totals[0] += yaw;
+        totals[1] += pitch;
+        // 1/1024 degree steps, wrapping: the game takes the difference between two totals
+        const auto steps = [](double degrees) { return static_cast<uint32_t>(static_cast<int64_t>(std::llround(std::fmod(degrees, 4194304.0) * 1024.0))); };
+        std::atomic_ref<uint32_t>(box[1]).store(steps(totals[0]), std::memory_order_relaxed);
+        std::atomic_ref<uint32_t>(box[2]).store(steps(totals[1]), std::memory_order_relaxed);
+    }
+    return true;
+}
+
 // [game] button_labels (utakata docs/01-research.md, "Button prompts"): the textures with PlayStation
 // buttons in them, found as the game uploads them (UTAKATA_TEXTURE_DUMP below), and the symbols' boxes
 // in them, upright: the game keeps its pictures upside down. Hashes and coordinates only.
@@ -714,6 +802,8 @@ int main(int argc, char *argv[]) {
     // it also speeds up while the stick is held (0.27 degrees a frame more each frame, at 30 fps), so the
     // mouse camera counts what it really turned
     profile.camera_angles = camera_angles;
+    // with the eboot's overrides the camera takes the mouse's motion itself, with no speed limit
+    profile.mouse_turn = mouse_turn;
     profile.usage = "Saves (then quit):\n"
                     "  --import-save <folder|zip>  copy decrypted Vita saves (e.g. from a Vita) in, keeping the\n"
                     "                              old ones in shinobido2/save-backups/\n"

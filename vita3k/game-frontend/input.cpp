@@ -297,10 +297,11 @@ float StickResponse::push_for(float speed) const {
 }
 
 void MouseCamera::configure(const StickResponse &response_x, const StickResponse &response_y, const Options &options,
-    CameraAngles angles) {
+    CameraAngles angles, DirectTurn direct) {
     responses[0] = response_x;
     responses[1] = response_y;
     this->angles = std::move(angles);
+    this->direct = std::move(direct);
     this->options = options;
 }
 
@@ -383,6 +384,17 @@ float MouseCamera::stick_measured(Axis &axis, const StickResponse &response, flo
 void MouseCamera::update(EmuEnvState &emuenv, uint64_t now_ns) {
     const float dt = last_ns && now_ns > last_ns ? std::min(static_cast<float>(now_ns - last_ns) / 1e9f, 0.1f) : 0.0f;
     last_ns = now_ns;
+    if (direct && direct(emuenv, axes[0].pending, axes[1].pending, now_ns)) {
+        // the game's camera took the motion itself: the stick stays centred
+        axes[0] = axes[1] = {};
+        if (pushed) {
+            pushed = false;
+            const std::lock_guard<std::mutex> lock(emuenv.ctrl.mutex);
+            emuenv.ctrl.mouse_state.axes[2] = 0;
+            emuenv.ctrl.mouse_state.axes[3] = 0;
+        }
+        return;
+    }
     std::optional<std::array<float, 2>> measured;
     if (angles)
         measured = angles(emuenv);
