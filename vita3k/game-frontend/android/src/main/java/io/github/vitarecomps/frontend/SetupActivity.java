@@ -19,6 +19,7 @@ package io.github.vitarecomps.frontend;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.opengl.EGL14;
@@ -90,31 +91,42 @@ public class SetupActivity extends Activity {
             finish();
             return;
         }
-        if (!shouldOffer()) {
-            startGame();
+        offerDriver(this, this::startGame);
+    }
+
+    /**
+     * The Turnip offer when it applies (an Adreno 711-799, no package yet, not declined for good), then
+     * `then` on the main thread, whatever the answer. The setup asks it before its first run of the game
+     * (the module dump), which then runs on the downloaded driver too: Qualcomm's driver on an Adreno 735
+     * (Android 16) crashed there (ss-delta #25), so the game never got built. Play asks it again when it
+     * wasn't answered then.
+     */
+    static void offerDriver(Activity activity, Runnable then) {
+        if (!shouldOffer(activity)) {
+            then.run();
             return;
         }
-        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("GPU driver")
             .setMessage("This device's own Vulkan driver (Qualcomm's) draws some of this game's effects wrong: "
                 + "black rectangles in fog and smoke.\n\n"
                 + "Turnip, the open-source Mesa driver for Adreno GPUs, draws them correctly. Download it now? "
                 + "(" + DRIVER_NAME + ", " + (DRIVER_SIZE / 100000) / 10.0 + " MB from github.com/MrPurple666/purple-turnip, "
-                + "MIT licence.) It is used by this game only.")
+                + "MIT licence.) It is used by this game only, from the setup on.")
             .setCancelable(false)
-            .setPositiveButton("Download", (d, w) -> download())
-            .setNeutralButton("Not now", (d, w) -> startGame())
+            .setPositiveButton("Download", (d, w) -> download(activity, then))
+            .setNeutralButton("Not now", (d, w) -> then.run())
             .setNegativeButton("Don't ask again", (d, w) -> {
-                answered();
-                startGame();
+                answered(activity);
+                then.run();
             })
             .show();
     }
 
-    private boolean shouldOffer() {
-        if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_DRIVER_ANSWERED, false))
+    private static boolean shouldOffer(Context context) {
+        if (context.getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_DRIVER_ANSWERED, false))
             return false;
-        File drivers = driversDir();
+        File drivers = driversDir(context);
         String[] present = drivers.list();
         if (present != null) {
             for (String name : present)
@@ -126,13 +138,13 @@ public class SetupActivity extends Activity {
         return model >= 711 && model <= 799;
     }
 
-    private File driversDir() {
-        File base = getExternalFilesDir(null);
-        return new File(base != null ? base : getFilesDir(), "drivers");
+    private static File driversDir(Context context) {
+        File base = context.getExternalFilesDir(null);
+        return new File(base != null ? base : context.getFilesDir(), "drivers");
     }
 
-    private void answered() {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_DRIVER_ANSWERED, true).apply();
+    private static void answered(Context context) {
+        context.getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_DRIVER_ANSWERED, true).apply();
     }
 
     static final String ACTION_ADD_ADDON = "io.github.vitarecomps.frontend.ADD_ADDON";
@@ -201,35 +213,36 @@ public class SetupActivity extends Activity {
         return m.find() ? Integer.parseInt(m.group(1)) : 0;
     }
 
-    private void download() {
-        AlertDialog progress = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+    private static void download(Activity activity, Runnable then) {
+        AlertDialog progress = new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("GPU driver")
             .setMessage("Downloading " + DRIVER_NAME + "…")
             .setCancelable(false)
             .show();
+        Handler main = new Handler(Looper.getMainLooper());
         new Thread(() -> {
-            String error = fetch();
+            String error = fetch(activity);
             main.post(() -> {
                 progress.dismiss();
                 if (error == null) {
-                    answered();
-                    startGame();
+                    answered(activity);
+                    then.run();
                     return;
                 }
-                new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                     .setTitle("GPU driver")
-                    .setMessage("The download failed: " + error + "\n\nThe game starts with the device's own driver; "
-                        + "the offer comes back at the next start.")
+                    .setMessage("The download failed: " + error + "\n\nThe game runs with the device's own driver; "
+                        + "the offer comes back next time.")
                     .setCancelable(false)
-                    .setPositiveButton("OK", (d, w) -> startGame())
+                    .setPositiveButton("OK", (d, w) -> then.run())
                     .show();
             });
         }).start();
     }
 
     // The pinned package into drivers/, checked; null, or what went wrong
-    private String fetch() {
-        File dir = driversDir();
+    private static String fetch(Context context) {
+        File dir = driversDir(context);
         File part = new File(dir, DRIVER_FILE + ".part");
         try {
             if (!dir.isDirectory() && !dir.mkdirs())

@@ -551,7 +551,8 @@ public class BuildActivity extends Activity {
             service(new String[] { "check", game.getPath() });
             break;
         case DUMP:
-            frontend(new String[] { "--dump-elfs", String.valueOf(dumpSeconds()) });
+            // the first run of the game: on an Adreno, Turnip is offered before it, not only at Play (#25)
+            SetupActivity.offerDriver(this, () -> frontend(new String[] { "--dump-elfs", String.valueOf(dumpSeconds()) }));
             break;
         case BUILD:
             service(new String[] { "build", game.getPath(), work().getPath(), BuildTools.toolchain(this).getPath(), "--stamp", stamp(this) });
