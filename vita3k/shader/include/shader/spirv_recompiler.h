@@ -43,7 +43,8 @@ static constexpr int COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE = 3;
 // 22 (vekta-mercenary): buffers loaded into registers fill them even when no uniform parameter names them
 // 23 (ss-delta): COLOR0 and COLOR1 vertex outputs clamped to [0, 1] with clamp_color_varyings
 // 24 (ss-delta #17): without coherent framebuffer reads, fragment shaders read the framebuffer from a copy (fetch_from_copy)
-static constexpr uint32_t CURRENT_VERSION = 24;
+// 25 (re-nova): a texture-buffer sample (texture picked by a register) with no LOD, a bias or gradients
+static constexpr uint32_t CURRENT_VERSION = 25;
 // fragment shader using the rendering surface as a storage image (because of shader interlock) have a line
 // layout (constant_id = GAMMA_CORRECTION_SPECIALIZATIO_ID) const bool is_srgb = false;
 // Setting this constant to true performs gamma correction in the shader
