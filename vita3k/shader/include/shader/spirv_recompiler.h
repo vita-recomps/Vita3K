@@ -44,7 +44,8 @@ static constexpr int COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE = 3;
 // 23 (ss-delta): COLOR0 and COLOR1 vertex outputs clamped to [0, 1] with clamp_color_varyings
 // 24 (ss-delta #17): without coherent framebuffer reads, fragment shaders read the framebuffer from a copy (fetch_from_copy)
 // 25 (re-nova): a texture-buffer sample (texture picked by a register) with no LOD, a bias or gradients
-static constexpr uint32_t CURRENT_VERSION = 25;
+// 26 (re-nova): a texture-buffer word's texture taken from the program's table, not from its position
+static constexpr uint32_t CURRENT_VERSION = 26;
 // fragment shader using the rendering surface as a storage image (because of shader interlock) have a line
 // layout (constant_id = GAMMA_CORRECTION_SPECIALIZATIO_ID) const bool is_srgb = false;
 // Setting this constant to true performs gamma correction in the shader

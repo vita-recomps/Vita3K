@@ -725,12 +725,28 @@ bool USSETranslatorVisitor::vldst(
             return true;
 
         int offset = (m_spirv_params.texture_buffer_base + inst.opr.src1.num + inst.opr.src2.num) / sizeof(uint32_t);
+        // which texture this word of the texture buffer belongs to: the program's table gives, for each
+        // word, its sampler's resource index * 4 + the word within the sampler's state. The buffer's
+        // order isn't the resource order (Phantasy Star Nova's Cast composite: word 4 is sTex_0, word 8
+        // sTex_7, ...); without a table, the word offset / 4
+        int resource_index = -1;
+        int word_in_state = offset % 4;
+        const SceGxmDependentSampler *tb_samplers = m_program.texture_buffer_dependent_sampler();
+        for (uint32_t i = 0; i < m_program.texture_buffer_dependent_sampler_count; i++) {
+            if (tb_samplers[i].sa_offset == offset) {
+                resource_index = tb_samplers[i].resource_index_layout_offset / 4;
+                word_in_state = tb_samplers[i].resource_index_layout_offset % 4;
+                break;
+            }
+        }
+        if (resource_index < 0)
+            resource_index = offset / 4;
         // we store the texture index in the first texture register, we don't do anything with the other 3
-        if (offset % 4 != 0)
+        if (word_in_state != 0)
             continue;
 
         to_store.type = DataType::INT32;
-        store(to_store, m_b.makeIntConstant(offset / 4), 0b1);
+        store(to_store, m_b.makeIntConstant(resource_index), 0b1);
         continue;
     } else if (inst.opr.src0.bank == RegisterBank::SECATTR && inst.opr.src0.num == m_spirv_params.literal_buffer_sa_offset) {
         // We are reading the literal buffer
