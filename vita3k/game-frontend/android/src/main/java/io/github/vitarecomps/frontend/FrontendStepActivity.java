@@ -117,7 +117,14 @@ public class FrontendStepActivity extends GameActivity {
         String function = getMainFunction();
         String[] arguments = getArguments();
         Log.i(TAG, "step: " + String.join(" ", arguments));
-        int code = SDLActivity.nativeRunMain(library, function, arguments);
+        int code;
+        try {
+            code = SDLActivity.nativeRunMain(library, function, arguments);
+        } catch (RuntimeException | LinkageError error) {
+            Log.e(TAG, "Native setup launch failed", error);
+            ImportDiagnostics.note(this, "Native setup launch failed: " + Log.getStackTraceString(error));
+            code = 1;
+        }
         Log.i(TAG, "step ended with " + code);
         // set before SDL's thread calls finish(), which hands the result to the caller
         setResult(code == 0 ? Activity.RESULT_OK : Activity.RESULT_FIRST_USER + code,
