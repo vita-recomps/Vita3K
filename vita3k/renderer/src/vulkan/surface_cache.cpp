@@ -29,9 +29,11 @@
 #include <util/log.h>
 #include <util/vector_utils.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <map>
 #include <mutex>
 #include <set>
@@ -1531,37 +1533,37 @@ bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, Ca
     if (!state.features.enable_memory_mapping || state.disable_surface_sync)
         return false;
 
-    if (vector_utils::find_index(cpu_surfaces_changed, source_address) != -1) {
-        // there is a transfer operation pending on this surface, just add the callback after and we are done
-        state.request_queue.push(CallbackRequest{ new CallbackRequestFunction(std::move(callback)) });
+    if (vector_utils::find_index(cpu_surfaces_changed, source_address) == -1) {
+        auto it = color_address_lookup.find(source_address);
+        if (it == color_address_lookup.end())
+            return false;
 
-        if (target_address)
-            cpu_surfaces_changed.push_back(target_address);
+        auto &surface = *it->second;
+        const auto &context = *static_cast<VKContext *>(state.context);
+        // An older surface may have been invalidated since its last draw.
+        if (surface.last_frame_rendered + MAX_FRAMES_RENDERING <= context.frame_timestamp)
+            return false;
+
+        if (!*surface.need_surface_sync) {
+            // The CPU reads the image, so the copy has to reach guest RAM.
+            surface.gpu_read_sync_only = false;
+            submit_immediate_surface_sync(surface);
+        }
+    }
+
+    // The next render command can upload the transfer destination as a texture.
+    // Finish the readback and the CPU copy before that command reads guest RAM.
+    auto transfer = std::make_shared<std::packaged_task<void()>>(std::move(callback));
+    auto finished = transfer->get_future();
+    auto run = std::make_shared<CallbackRequestFunction>([transfer] { (*transfer)(); });
+    if (!state.request_queue.push(CallbackRequest{ std::move(run), true }))
         return true;
+
+    while (finished.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+        if (state.request_queue.is_aborted())
+            return true;
     }
-
-    // for now, only look if the address matches exactly a color surface
-    auto it = color_address_lookup.find(source_address);
-    if (it == color_address_lookup.end())
-        return false;
-
-    auto &surface = *it->second;
-    VKContext &context = *static_cast<VKContext *>(state.context);
-    // if the frame is already rendered skip
-    // Note: that's not the best behavior but it should be fine
-    // also it prevents invalidated surfaces from causing issues
-    if (surface.last_frame_rendered + MAX_FRAMES_RENDERING <= context.frame_timestamp)
-        return false;
-
-    // we found something
-    if (!*surface.need_surface_sync) {
-        // the CPU reads it: guest RAM gets the image too
-        surface.gpu_read_sync_only = false;
-        submit_immediate_surface_sync(surface);
-    }
-
-    // now push the callback
-    state.request_queue.push(CallbackRequest{ new CallbackRequestFunction(std::move(callback)) });
+    finished.get();
 
     if (target_address)
         cpu_surfaces_changed.push_back(target_address);
@@ -1640,7 +1642,7 @@ void VKSurfaceCache::submit_immediate_surface_sync(ColorSurfaceCacheInfo &surfac
         std::lock_guard<std::mutex> lock(state.multithread_pool_mutex);
         state.device.freeCommandBuffers(state.multithread_command_pool, surface_cmd);
     };
-    state.request_queue.push(CallbackRequest{ new CallbackRequestFunction(std::move(vk_callback)) });
+    state.request_queue.push(CallbackRequest{ std::make_shared<CallbackRequestFunction>(std::move(vk_callback)) });
 
     // double-buffer: the copy above went to the GPU's buffer; guest RAM gets it here, once the fence
     // above has passed, as the end of a scene does (VKContext::submit_command_buffer). Without it a
