@@ -366,7 +366,6 @@ VKState::VKState(int gpu_idx)
 }
 
 bool VKState::init() {
-    shader_version = fmt::format("v{}", shader::CURRENT_VERSION);
     return true;
 }
 
@@ -1029,6 +1028,7 @@ void VKState::late_init(const Config &cfg, const std::string_view game_id, MemSt
     LOG_INFO_IF(features.vpck_zero_fill, "Shaders: packs into 8- and 16-bit integers zero the rest of each register");
     features.exp_log_base2 = cfg.exp_log_base2;
     LOG_INFO_IF(features.exp_log_base2, "Shaders: EXP and LOG are base 2");
+    shader_version = fmt::format("vk{}{}", shader::CURRENT_VERSION, features.exp_log_base2 ? "-exp2" : "");
     features.clamp_color_varyings = cfg.clamp_color_varyings;
     // VITA3K_CLAMP_COLOR_VARYINGS=0 or 1 overrides the game's choice (debugging aid)
     if (const char *v = std::getenv("VITA3K_CLAMP_COLOR_VARYINGS"); v && (v[0] == '0' || v[0] == '1'))
@@ -1388,6 +1388,7 @@ uint32_t VKState::get_features_mask() {
             bool use_memory_mapping : 1;
             bool use_rgb_attributes : 1;
             bool use_scaled_attributes : 1;
+            bool exp_log_base2 : 1;
         };
         uint32_t value;
     } features_mask;
@@ -1399,6 +1400,7 @@ uint32_t VKState::get_features_mask() {
     features_mask.use_memory_mapping = features.enable_memory_mapping;
     features_mask.use_rgb_attributes = features.support_rgb_attributes;
     features_mask.use_scaled_attributes = pipeline_cache.support_scaled_vertex_attribute;
+    features_mask.exp_log_base2 = features.exp_log_base2;
 
     return features_mask.value;
 }

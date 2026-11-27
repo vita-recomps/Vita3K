@@ -72,11 +72,9 @@ void log_patch(const EmuEnvState &emuenv, bool repatch) {
 game_frontend::IniLayout ini_layout() {
     using Kind = game_frontend::SettingSpec::Kind;
     const std::string id = "re-nova", exe = id + game_frontend::executable_suffix;
-    game_frontend::SettingSpec mapping{ "memory_mapping", Kind::Choice, "external-host", 0, 0,
-        { "external-host", "double-buffer", "page-table", "native-buffer" },
-        "How the game's memory is shared with the graphics card (Vita3K's memory mapping).\n"
-        "external-host: the player character drawn correctly. double-buffer: Vita3K's default here,\n"
-        "which draws the player black in the character creator and the game (being fixed). Read\n"
+    game_frontend::SettingSpec mapping{ "memory_mapping", Kind::Choice, "double-buffer", 0, 0,
+        { "double-buffer", "external-host", "page-table", "native-buffer" },
+        "How the game's memory is shared with the graphics card (Vita3K's memory mapping). Read\n"
         "when the game starts." };
     mapping.title = "Memory mapping";
     return {
@@ -112,12 +110,13 @@ int main(int argc, char *argv[]) {
     profile.hooks.configure = [](game_frontend::Context &ctx, Config &cfg) {
         // a PS TV: pads on the external ports, the PS TV model (SceCtrl, SceSysmem)
         cfg.pstv_mode = ctx.settings->values.get_bool("controls.pstv_mode");
-        // the front end's double-buffer draws the player character black (the project's 02-baseline)
         cfg.memory_mapping = ctx.settings->values.get("display.memory_mapping");
         // RENOVA_MEMORY_MAPPING (debug): overrides the setting for a run
         if (const char *mapping = std::getenv("RENOVA_MEMORY_MAPPING"); mapping && *mapping)
             cfg.memory_mapping = mapping;
         LOG_INFO("memory mapping: {}", cfg.memory_mapping);
+        // Nova's quarter-resolution post-process uses USSE's base-2 exponentials.
+        cfg.exp_log_base2 = true;
         // a draw whose pipeline is still compiling waits for it (up to 250 ms, from a budget that refills
         // at a quarter of the time passing) rather than being skipped: cutscenes, mostly seen once,
         // showed characters missing until a camera cut. With an empty cache the opening waited 120 ms in
