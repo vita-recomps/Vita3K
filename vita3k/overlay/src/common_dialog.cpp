@@ -233,6 +233,15 @@ bool common_dialog_overlay::poll_dialog(DialogState &dialog, int date_format, in
 
     const int new_type = static_cast<int>(dialog.type);
 
+    // A completed fixed-load query for the sentinel slot has no card to show.
+    const auto &savedata = dialog.savedata;
+    if (m_active_type == 0 && dialog.type == SAVEDATA_DIALOG
+        && savedata.mode_to_display == SCE_SAVEDATA_DIALOG_MODE_FIXED
+        && savedata.display_type == SCE_SAVEDATA_DIALOG_TYPE_LOAD
+        && dialog.substatus == SCE_COMMON_DIALOG_STATUS_FINISHED
+        && savedata.slot_id.size() == 1 && savedata.slot_id.front() == 0xffffffffu)
+        return false;
+
     // Dialog type changed — rebuild
     if (m_active_type != new_type) {
         clear_all();
