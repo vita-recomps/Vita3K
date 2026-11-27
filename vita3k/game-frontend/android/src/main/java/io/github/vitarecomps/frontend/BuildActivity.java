@@ -161,7 +161,9 @@ public class BuildActivity extends Activity {
         if (!record.isFile())
             return false;
         try (InputStream in = new FileInputStream(record)) {
-            return !new JSONObject(new String(readAll(in), StandardCharsets.UTF_8)).optString("stamp").equals(stamp(context));
+            JSONObject built = new JSONObject(new String(readAll(in), StandardCharsets.UTF_8));
+            if (OfflineImports.supported(context) && ImportedModuleSet.reusable(context, built)) return false;
+            return !built.optString("stamp").equals(stamp(context));
         } catch (Exception e) {
             return true;
         }
@@ -284,6 +286,8 @@ public class BuildActivity extends Activity {
         page.setFocusable(false);
         page.addView(column);
         setContentView(page);
+        if (OfflineImports.supported(this))
+            ImportScreen.attach(this, column, title, buttons, partsView, actions, stepView, errorView, logScroll);
         // the app was closed during one of the front end's steps: the player goes on with Try again
         if (step == INSTALL_FIRMWARE || step == INSTALL_GAME || step == DUMP || step == INSTALL_ADDON) {
             synchronized (BuildService.state) {
@@ -388,6 +392,8 @@ public class BuildActivity extends Activity {
         // built: Play (or Build, to build again); setting up: the progress, and the files it uses (none
         // for a rebuild after an update)
         boolean built = !busy && !needsSetup(this);
+        ImportScreen.setupState(this, busy || importing != null, running || importing != null, error);
+        OfflineImports.refreshStatus(this);
         for (View v : formViews)
             v.setVisibility(busy || built ? View.GONE : View.VISIBLE);
         partsView.setVisibility(step == INSTALL_ADDON ? View.VISIBLE
@@ -457,6 +463,10 @@ public class BuildActivity extends Activity {
             : "Firmware: " + String.join(", ", have) + " is here; " + String.join(", ", missing) + " will be downloaded from Sony.";
         return firmwareReport.isEmpty() ? status : firmwareReport + "\n" + status;
     }
+
+    Button officialFirmwareButton() { return firmwareButton; }
+    TextView officialFirmwareStatus() { return firmwareView; }
+    void chooseOfficialFirmware() { pickFirmware(); }
 
     private void pickFirmware() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -569,7 +579,12 @@ public class BuildActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (OfflineImports.result(this, requestCode, resultCode, data)) return;
         if (requestCode == REQUEST_STEP) {
+            if (resultCode != RESULT_OK || data == null || data.getIntExtra(FrontendStepActivity.EXTRA_EXIT_CODE, -1) != 0)
+                ImportDiagnostics.note(this, "Native installation step did not complete successfully");
+            MainInstallProgress.stop(this);
+            OfflineImports.nativeStepResult(this, step, resultCode, data);
             waitingForStep = false;
             int code = data != null ? data.getIntExtra(FrontendStepActivity.EXTRA_EXIT_CODE, -1) : -1;
             BuildService.append(this, STEP_NAMES[step] + ": exit " + code);
@@ -662,6 +677,8 @@ public class BuildActivity extends Activity {
 
     // --- the steps ----------------------------------------------------------------------------
 
+    void onModulesImported() { rebuild = canRebuild(); refresh(); }
+
     private void startSetup() {
         // (the notification permission was asked when the screen opened: never here, where its dialog would
         // hold up the steps)
@@ -671,7 +688,7 @@ public class BuildActivity extends Activity {
             BuildService.state.error = null;
         }
         // after an app update, the installed game and its dumped modules are still here: the build alone
-        step = parts.length() == 0 && rebuild ? BUILD : FIRMWARE;
+        step = parts.length() == 0 && rebuild ? (OfflineImports.importedReady(this) ? CHECK : BUILD) : FIRMWARE;
         save();
         run();
     }
@@ -714,6 +731,7 @@ public class BuildActivity extends Activity {
             service(new String[] { "check", game.getPath() });
             break;
         case DUMP:
+            if (OfflineImports.importedReady(this)) { step = BUILD; save(); run(); break; }
             // the first run of the game: on an Adreno, Turnip is offered before it, not only at Play (#25)
             SetupActivity.offerDriver(this, () -> frontend(new String[] { "--dump-elfs", String.valueOf(dumpSeconds()) }));
             break;
@@ -782,7 +800,7 @@ public class BuildActivity extends Activity {
             if (title.isEmpty() || !new File(dir, "fs/ux0/app/" + title + "/eboot.bin").isFile())
                 continue;
             String[] dumps = new File(dir, game().optString("id") + "/elfdumps/" + title).list((d, n) -> n.endsWith("_eboot.elf"));
-            if (dumps != null && dumps.length > 0)
+            if ((dumps != null && dumps.length > 0) || OfflineImports.importedReady(this))
                 return true;
         }
         return false;
@@ -806,6 +824,7 @@ public class BuildActivity extends Activity {
     }
 
     private void frontend(String[] args) {
+        MainInstallProgress.begin(this, args);
         BuildService.append(this, "$ front end " + String.join(" ", args));
         waitingForStep = true;
         startActivityForResult(new Intent(this, FrontendStepActivity.class).putExtra("args", args), REQUEST_STEP);
@@ -862,4 +881,5 @@ public class BuildActivity extends Activity {
             out.write(buffer, 0, n);
         return out.toByteArray();
     }
+    @Override protected void onDestroy() { MainInstallProgress.stop(this); super.onDestroy(); }
 }

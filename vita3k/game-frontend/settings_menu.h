@@ -44,6 +44,7 @@ public:
     // what a Controls page row binds: a Vita button ([keyboard] and [gamepad]) or a touch ([touch])
     enum class Binding { None, Button, Touch };
     struct Row {
+        std::string android_action;
         std::string section;
         SettingSpec spec;
         std::string value;

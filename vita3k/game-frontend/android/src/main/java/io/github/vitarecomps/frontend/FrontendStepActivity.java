@@ -35,6 +35,7 @@ import org.libsdl.app.SDLActivity;
  * front end keeps state in static objects and is never run twice in one process.
  */
 public class FrontendStepActivity extends GameActivity {
+    @Override protected void onCreate(android.os.Bundle state) { if (OfflineImports.supported(this)) StepProgress.prepareWindow(this); super.onCreate(state); if (OfflineImports.supported(this)) StepProgress.attach(this); }
     private static final String TAG = "FrontendStep";
     public static final String EXTRA_EXIT_CODE = "exit_code";
     // picked files up to this size (licences, a small mod) are copied into the cache, bigger ones linked
@@ -117,7 +118,9 @@ public class FrontendStepActivity extends GameActivity {
         String function = getMainFunction();
         String[] arguments = getArguments();
         Log.i(TAG, "step: " + String.join(" ", arguments));
-        int code = SDLActivity.nativeRunMain(library, function, arguments);
+        int code;
+        try { code = SDLActivity.nativeRunMain(library, function, arguments); }
+        catch (RuntimeException | LinkageError error) { ImportDiagnostics.note(this, "Native setup failed: " + Log.getStackTraceString(error)); Log.e(TAG, "Native setup failed", error); code = 1; }
         Log.i(TAG, "step ended with " + code);
         // set before SDL's thread calls finish(), which hands the result to the caller
         setResult(code == 0 ? Activity.RESULT_OK : Activity.RESULT_FIRST_USER + code,
