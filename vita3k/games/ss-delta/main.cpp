@@ -24,6 +24,9 @@
 #include "allies.h"
 #include "dlc.h"
 #include "saves.h"
+#include "native_resolution.h"
+#include <cstdlib>
+#include <cstddef>
 
 #include <config/state.h>
 #include <cpu/aot.h>
@@ -156,9 +159,9 @@ game_frontend::IniLayout ini_layout() {
     const std::string id = "ss-delta", exe = id + game_frontend::executable_suffix;
     IniSection display{ "display", "",
         {
-            { "full_3d", Kind::Bool, "true", 0, 0, {},
-                "Draw the 3D at 960x544 like the menus and HUD (the game's own ResoDown 0). Off: 720x408,\n"
-                "upscaled, as on the Vita." },
+            { "full_3d", Kind::Choice, "true", 0, 0, { "half", "false", "true" },
+                "Resolucao interna do 3D: 0.5x 480x272, 0.75x 720x408 ou 1x 960x544.\n"
+                "HUD e menus mantem 960x544 na escala geral 1x. Reinicie o jogo para aplicar." },
             layout::scale(),
             layout::window_scale(),
             layout::fullscreen(id, exe),
@@ -176,8 +179,7 @@ game_frontend::IniLayout ini_layout() {
     for (auto &spec : display.settings) {
         if (spec.key == "frame_rate")
             spec.live = true;
-        if (spec.key == "full_3d")
-            spec.title = "Full-resolution 3D";
+        if (spec.key == "full_3d") { spec.title = "Native 3D resolution"; spec.choice_labels = { "0.5x (480x272)", "0.75x (720x408)", "1x (960x544)" }; }
     }
     IniSection game{ "game", "",
         { { "dlc", Kind::Bool, "true", 0, 0, {},
@@ -366,23 +368,13 @@ void override_boot_config(EmuEnvState &emuenv, const std::string &title_id, cons
 // Depth of field and haze then use the depth beside each pixel (bones in the hub blurred). Both
 // values are in the shaders' literal table, a list of {u32 register, f32 value}, as consecutive
 // entries; they are set to 1.0 there.
-void unscale_depth_uvs(SceGxmProgram &program) {
-    constexpr uint32_t x_scale = 0x3f7a6f4e; // 720 / 736
-    constexpr uint32_t y_scale = 0x3f7b13b2; // 408 / 416
-    constexpr uint32_t one = 0x3f800000;
-    uint8_t *const bytes = reinterpret_cast<uint8_t *>(&program);
-    int replaced = 0;
-    for (uint32_t i = 0; i + 12 <= program.size; i += 4) {
-        uint32_t x, y;
-        std::memcpy(&x, bytes + i, 4);
-        std::memcpy(&y, bytes + i + 8, 4);
-        if (x == x_scale && y == y_scale) {
-            std::memcpy(bytes + i, &one, 4);
-            std::memcpy(bytes + i + 8, &one, 4);
-            replaced++;
-        }
-    }
-    LOG_INFO_IF(replaced, "full_3d: depth UV scale set to 1.0 in a {} shader", program.is_vertex() ? "vertex" : "fragment");
+void scale_depth_uvs(SceGxmProgram &program, ss_delta::native_resolution::Mode mode) {
+    const size_t field=offsetof(SceGxmProgram,literals_offset);
+    if(program.size<field+sizeof(program.literals_offset))return;
+    const size_t table=field+static_cast<size_t>(program.literals_offset);
+    const size_t replaced=ss_delta::native_resolution::patch_literals(
+        reinterpret_cast<uint8_t*>(&program),program.size,table,program.literals_count,mode);
+    LOG_INFO_IF(replaced,"3D resolution: depth UVs set to {}/{} in a {} shader",mode.uv_x(),mode.uv_y(),program.is_vertex()?"vertex":"fragment");
 }
 
 // The frame rate (docs/03-plan.md, 60 fps): the game paces its main loop with a frame timer
@@ -1093,13 +1085,22 @@ int main(int argc, char *argv[]) {
                 LOG_WARN("Add-ons: not unlocked, the installed game lacks them ({})", why);
         }
         // the game's own engine settings that ss-delta.ini changes
-        const bool full_3d = values.get_bool("display.full_3d");
-        std::map<std::string, std::string> boot_config{ { "ResoDown", full_3d ? "0" : "1" } };
+        const int requested_mode=ss_delta::native_resolution::setting_mode(values.get("display.full_3d"));
+        std::map<std::string, std::string> boot_config{ { "ResoDown", std::to_string(requested_mode) } };
         for (const auto &[key, value] : values.section("boot_config"))
             boot_config[key] = value;
         override_boot_config(emuenv, profile.title_id, ctx.data_dir / "game", boot_config);
-        if (full_3d)
-            emuenv.gxm.on_program_registered = unscale_depth_uvs;
+        // Respect an explicit boot_config override and derive UV padding from the effective mode.
+        char *end=nullptr;const std::string &configured=boot_config.at("ResoDown");
+        const long number=std::strtol(configured.c_str(),&end,10);
+        if(end!=configured.c_str()&&*end=='\0'&&number>=0&&number<=2147483647L){
+            const auto mode=ss_delta::native_resolution::mode_for(static_cast<int>(number));
+            emuenv.gxm.on_program_registered=[mode](SceGxmProgram &program){scale_depth_uvs(program,mode);};
+            LOG_INFO("3D resolution: mode {} -> {}x{}; depth padded {}x{}; UV {}/{}; HUD 960x544; global scale {}",number,mode.width,mode.height,mode.padded_width(),mode.padded_height(),mode.uv_x(),mode.uv_y(),settings.scale);
+        } else {
+            emuenv.gxm.on_program_registered=nullptr;
+            LOG_WARN("3D resolution: unrecognized ResoDown {}; depth literals left unchanged",configured);
+        }
     };
     hooks.on_tick = [&](game_frontend::Context &ctx) {
         const int fps = ctx.settings->values.get_int("display.frame_rate");
