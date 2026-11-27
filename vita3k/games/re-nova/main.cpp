@@ -83,7 +83,7 @@ game_frontend::IniLayout ini_layout() {
             layout::paths(TITLE_ID, id, exe),
             { "display", "",
                 { layout::scale(), layout::window_scale(), layout::fullscreen(id, exe), layout::vsync(),
-                    layout::filter(), layout::fps_counter(), layout::mipmaps(false), mapping } },
+                    layout::filter(), layout::fps_counter(), layout::mipmaps(true), mapping } },
             layout::audio(),
             { "controls", "",
                 { { "pstv_mode", Kind::Bool, "false", 0, 0, {},
@@ -106,6 +106,7 @@ int main(int argc, char *argv[]) {
     profile.title_id = TITLE_ID;
     profile.name = "Re:NOVA";
     profile.id = "re-nova";
+    profile.smooth_mip_sampling = true;
     profile.ini = ini_layout();
     profile.hooks.configure = [](game_frontend::Context &ctx, Config &cfg) {
         // a PS TV: pads on the external ports, the PS TV model (SceCtrl, SceSysmem)
@@ -115,6 +116,12 @@ int main(int argc, char *argv[]) {
         if (const char *mapping = std::getenv("RENOVA_MEMORY_MAPPING"); mapping && *mapping)
             cfg.memory_mapping = mapping;
         LOG_INFO("memory mapping: {}", cfg.memory_mapping);
+        // Nova's environment textures ship with truncated mip chains (1-5 levels) and -1..-2 LOD
+        // bias, causing heavy ground shimmer in motion. When [display] mipmaps is on, pair full
+        // mip chains and clamped LOD bias with 16x anisotropic filtering so oblique ground stays
+        // sharp without aliasing.
+        if (ctx.settings->values.get_bool("display.mipmaps"))
+            cfg.anisotropic_filtering = 16;
         // Nova's quarter-resolution post-process uses USSE's base-2 exponentials.
         cfg.exp_log_base2 = true;
         // a draw whose pipeline is still compiling waits for it (up to 250 ms, from a budget that refills

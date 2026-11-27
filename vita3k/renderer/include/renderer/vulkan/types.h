@@ -54,6 +54,7 @@ struct TextureCacheEntry {
     vkutil::Image texture;
     bool is_cube;
     uint16_t mip_count;
+    uint16_t uploaded_mip_count = 1;
     uint32_t memory_needed;
 };
 

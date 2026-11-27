@@ -94,6 +94,10 @@ struct State {
     // build mip chains for repeating textures the game ships without mips (Vulkan; a game's front
     // end turns it on): they alias and shimmer in motion otherwise. Read when a texture is created.
     bool generate_mips = false;
+    // extend generate_mips to complete partial mip chains, clamp negative LOD bias to 0 and use
+    // trilinear mip filtering when minification is linear (for games whose environment textures
+    // ship with truncated mip chains and negative LOD bias, e.g. Phantasy Star Nova).
+    bool smooth_mip_sampling = false;
 
     FrameHost *frame = nullptr;
 

@@ -1491,8 +1491,11 @@ int run(Profile &profile, int argc, char *argv[]) {
         // the first ticks, before the game creates its textures
         if (!mipmaps_set && emuenv.renderer) {
             mipmaps_set = true;
-            emuenv.renderer->generate_mips = settings.values.get_bool("display.mipmaps");
-            LOG_INFO("generated mipmaps: {}", emuenv.renderer->generate_mips ? "on" : "off");
+            const bool mipmaps = settings.values.get_bool("display.mipmaps");
+            emuenv.renderer->generate_mips = mipmaps;
+            emuenv.renderer->smooth_mip_sampling = mipmaps && profile.smooth_mip_sampling;
+            LOG_INFO("generated mipmaps: {}{}", mipmaps ? "on" : "off",
+                emuenv.renderer->smooth_mip_sampling ? " (full chains, clamped LOD bias, trilinear)" : "");
             // [debug] surface_sync: which scenes wait for the GPU
             emuenv.renderer->surface_sync_wait = settings.surface_sync < 3 ? settings.surface_sync : 0;
             LOG_INFO("surface sync: {}", std::array<const char *, 4>{ "exact", "targeted", "latent", "off" }[settings.surface_sync]);

@@ -113,6 +113,9 @@ struct Profile {
     MouseCamera::DirectTurn mouse_turn;
     // Ad Hoc Play: --player 2-4 run more copies with their own Vita user, config and log
     bool multiplayer = false;
+    // when [display] mipmaps is on, also complete partial mip chains, clamp negative LOD bias to 0
+    // and use trilinear mip filtering (for games with truncated mip chains and negative LOD bias)
+    bool smooth_mip_sampling = false;
     // the executable has an icon resource with id 101 (its .rc); the window then uses it
     bool icon_resource = false;
     // the game's own command-line options (hooks.parse_arg), for --help: lines as in its usage list

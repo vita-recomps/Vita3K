@@ -415,13 +415,18 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
     uint32_t height = gxm::get_height(gxm_texture);
 
     uint16_t mip_count = renderer::texture::get_upload_mip(gxm_texture.true_mip_count(), width, height);
+    const uint16_t uploaded_mip_count = mip_count;
+    const uint16_t min_dim_mips = static_cast<uint16_t>(std::bit_width(std::min(width, height)));
+    const uint16_t full_mip_count = static_cast<uint16_t>(std::bit_width(std::max(width, height)));
 
     // State::generate_mips: a repeating swizzled or tiled texture of 64 px or more without mips
-    // gets a full chain, built on the GPU from level 0 (upload_done); a compressed one is
-    // decompressed first, as blits need an uncompressed format
+    // (or with a partial mip chain when smooth_mip_sampling is set) gets a full chain, built on
+    // the GPU from the smallest uploaded level (upload_done); a compressed one is decompressed
+    // first, as blits need an uncompressed format
     const auto type = gxm_texture.texture_type();
     const bool repeats = gxm_texture.uaddr_mode == SCE_GXM_TEXTURE_ADDR_REPEAT || gxm_texture.vaddr_mode == SCE_GXM_TEXTURE_ADDR_REPEAT;
-    bool generate_mips = state.generate_mips && mip_count == 1 && !is_cube && repeats && width >= 64 && height >= 64
+    const bool needs_mips = state.smooth_mip_sampling ? (uploaded_mip_count < min_dim_mips) : (uploaded_mip_count == 1);
+    bool generate_mips = state.generate_mips && needs_mips && !is_cube && repeats && width >= 64 && height >= 64
         && (type == SCE_GXM_TEXTURE_SWIZZLED || type == SCE_GXM_TEXTURE_TILED);
 
     vk::Format vk_format = texture::translate_format(base_format);
@@ -442,11 +447,12 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
         }
     }
     if (generate_mips)
-        mip_count = static_cast<uint16_t>(std::bit_width(std::max(width, height)));
+        mip_count = full_mip_count;
     if (current_info)
         current_info->generate_mips = generate_mips;
 
     current_texture->mip_count = mip_count;
+    current_texture->uploaded_mip_count = uploaded_mip_count;
     current_texture->is_cube = is_cube;
     uint32_t memory_needed = get_image_memory_upper_bound(gxm_texture, vk_format, base_format);
     if (mip_count > 1)
@@ -599,12 +605,20 @@ void VKTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, ui
 }
 
 void VKTextureCache::upload_done() {
-    if (current_info && current_info->generate_mips && current_texture->mip_count > 1 && cmd_buffer) {
-        // State::generate_mips: each level from the one above, halving with a linear filter; level 0
-        // was just uploaded, all levels are in the transfer-destination layout
+    if (current_info && current_info->generate_mips && current_texture->mip_count > current_texture->uploaded_mip_count && cmd_buffer) {
+        // State::generate_mips: build the remaining mip levels from the smallest uploaded level,
+        // halving with a linear filter; uploaded levels are already in TransferDst layout
         vkutil::Image &image = current_texture->texture;
-        int32_t w = static_cast<int32_t>(image.width), h = static_cast<int32_t>(image.height);
-        for (uint32_t level = 1; level < current_texture->mip_count; level++) {
+        const uint32_t start_level = std::max<uint32_t>(1, current_texture->uploaded_mip_count);
+        if (start_level > 1) {
+            const vk::ImageSubresourceRange uploaded{
+                .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = start_level - 1, .baseArrayLayer = 0, .layerCount = 1
+            };
+            vkutil::transition_image_layout(cmd_buffer, image.image, vkutil::ImageLayout::TransferDst, vkutil::ImageLayout::SampledImage, uploaded);
+        }
+        int32_t w = std::max<int32_t>(static_cast<int32_t>(image.width >> (start_level - 1)), 1);
+        int32_t h = std::max<int32_t>(static_cast<int32_t>(image.height >> (start_level - 1)), 1);
+        for (uint32_t level = start_level; level < current_texture->mip_count; level++) {
             const vk::ImageSubresourceRange above{
                 .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = level - 1, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1
             };
@@ -622,7 +636,7 @@ void VKTextureCache::upload_done() {
         }
         const uint32_t last = current_texture->mip_count - 1;
         const vk::ImageSubresourceRange upper{
-            .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = last, .baseArrayLayer = 0, .layerCount = 1
+            .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = start_level - 1, .levelCount = last - (start_level - 1), .baseArrayLayer = 0, .layerCount = 1
         };
         const vk::ImageSubresourceRange lowest{
             .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = last, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1
@@ -670,16 +684,31 @@ void VKTextureCache::configure_sampler(size_t index, const SceGxmTexture &textur
         mag_filter = SCE_GXM_TEXTURE_FILTER_POINT;
     }
 
+    const int max_aniso = state.physical_device_features.samplerAnisotropy
+        ? static_cast<int>(state.physical_device_properties.limits.maxSamplerAnisotropy)
+        : 1;
+    const int eff_aniso = std::clamp(anisotropic_filtering, 1, std::max(1, max_aniso));
+    const vk::Filter vk_mag = texture::translate_filter(mag_filter);
+    const vk::Filter vk_min = texture::translate_filter(min_filter);
+    vk::SamplerMipmapMode mipmap_mode = texture.mip_filter ? vk::SamplerMipmapMode::eLinear : vk::SamplerMipmapMode::eNearest;
+    float lod_bias = (static_cast<float>(texture.lod_bias) - 31.f) / 8.f;
+    if (state.smooth_mip_sampling) {
+        if (lod_bias < 0.f)
+            lod_bias = 0.f;
+        if (vk_min == vk::Filter::eLinear)
+            mipmap_mode = vk::SamplerMipmapMode::eLinear;
+    }
+
     // create sampler
     vk::SamplerCreateInfo sampler_info{
-        .magFilter = texture::translate_filter(mag_filter),
-        .minFilter = texture::translate_filter(min_filter),
-        .mipmapMode = texture.mip_filter ? vk::SamplerMipmapMode::eLinear : vk::SamplerMipmapMode::eNearest,
+        .magFilter = vk_mag,
+        .minFilter = vk_min,
+        .mipmapMode = mipmap_mode,
         .addressModeU = texture::translate_address_mode(uaddr),
         .addressModeV = texture::translate_address_mode(vaddr),
         .addressModeW = vk::SamplerAddressMode::eRepeat,
-        .mipLodBias = (static_cast<float>(texture.lod_bias) - 31.f) / 8.f,
-        .maxAnisotropy = static_cast<float>(anisotropic_filtering),
+        .mipLodBias = lod_bias,
+        .maxAnisotropy = static_cast<float>(eff_aniso),
         .compareEnable = VK_FALSE,
         .minLod = static_cast<float>(texture.true_lod_min()),
         .maxLod = VK_LOD_CLAMP_NONE,
@@ -687,7 +716,7 @@ void VKTextureCache::configure_sampler(size_t index, const SceGxmTexture &textur
     };
 
     // when using nearest filter, disable anisotropy as the pixels can contain data other than color
-    sampler_info.anisotropyEnable = (anisotropic_filtering > 1) && (sampler_info.magFilter != vk::Filter::eNearest || sampler_info.minFilter != vk::Filter::eNearest);
+    sampler_info.anisotropyEnable = (eff_aniso > 1) && (sampler_info.magFilter != vk::Filter::eNearest || sampler_info.minFilter != vk::Filter::eNearest);
 
     sampler = state.device.createSampler(sampler_info);
 }
