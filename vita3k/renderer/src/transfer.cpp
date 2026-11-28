@@ -31,6 +31,7 @@
 #include <util/keywords.h>
 
 #include <cstdlib>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -171,14 +172,16 @@ COMMAND(handle_transfer_copy) {
     const uint32_t colorKeyMask = helper.pop<uint32_t>();
     SceGxmTransferColorKeyMode colorKeyMode = helper.pop<SceGxmTransferColorKeyMode>();
     const SceGxmTransferImage *images = helper.pop<SceGxmTransferImage *>();
-    const SceGxmTransferFormat src_fmt = images[0].format;
-    const SceGxmTransferFormat dst_fmt = images[1].format;
+    const SceGxmTransferImage src = images[0];
+    const SceGxmTransferImage dst = images[1];
+    delete[] images;
+    const SceGxmTransferFormat src_fmt = src.format;
+    const SceGxmTransferFormat dst_fmt = dst.format;
     SceGxmTransferType src_type = helper.pop<SceGxmTransferType>();
     SceGxmTransferType dst_type = helper.pop<SceGxmTransferType>();
 
     if (src_fmt != dst_fmt) {
         LOG_ERROR_ONCE("Unhandled format conversion from 0x{:0X} to 0x{:0X}", fmt::underlying(src_fmt), fmt::underlying(dst_fmt));
-        delete[] images;
         return;
     }
 
@@ -187,9 +190,6 @@ COMMAND(handle_transfer_copy) {
     }
 
     vulkan::CallbackRequestFunction copy_operation = [=, &mem]() {
-        const SceGxmTransferImage &src = images[0];
-        const SceGxmTransferImage &dst = images[1];
-
         // Get bits per pixel of the image
         const uint32_t bpp = gxm::get_bits_per_pixel(src.format);
 
@@ -214,8 +214,6 @@ COMMAND(handle_transfer_copy) {
             perform_transfer_copy_src_type<std::array<uint64_t, 2>, SCE_GXM_TRANSFER_COLORKEY_NONE>(mem, src, dst, src_type, dst_type, colorKeyValue, colorKeyMask);
             break;
         }
-
-        delete[] images;
     };
 
     // VITA3K_TRACE_SURFACES=1: log each transfer copy once (debugging aid)
@@ -227,16 +225,16 @@ COMMAND(handle_transfer_copy) {
         if (!trace_copies)
             return;
         static std::set<std::string> seen;
-        const std::string key = fmt::format("{:x} {:x} {}x{} {:x}", images[0].address.address(), images[1].address.address(), images[0].width,
-            images[0].height, fmt::underlying(src_fmt));
+        const std::string key = fmt::format("{:x} {:x} {}x{} {:x}", src.address.address(), dst.address.address(), src.width,
+            src.height, fmt::underlying(src_fmt));
         if (seen.insert(key).second)
-            LOG_INFO("transfer copy {} ({}, {}) -> {} ({}, {}), {}x{} format {:#x} type {}->{}: {}", log_hex(images[0].address.address()), images[0].x,
-                images[0].y, log_hex(images[1].address.address()), images[1].x, images[1].y, images[0].width, images[0].height,
+            LOG_INFO("transfer copy {} ({}, {}) -> {} ({}, {}), {}x{} format {:#x} type {}->{}: {}", log_hex(src.address.address()), src.x,
+                src.y, log_hex(dst.address.address()), dst.x, dst.y, src.width, src.height,
                 fmt::underlying(src_fmt), fmt::underlying(src_type), fmt::underlying(dst_type), how);
     };
 
     if (renderer.current_backend == Backend::Vulkan && renderer.features.enable_memory_mapping && !renderer.disable_surface_sync) {
-        if (dynamic_cast<vulkan::VKState &>(renderer).surface_cache.check_for_surface(mem, images[0].address.address(), copy_operation, images[1].address.address())) {
+        if (dynamic_cast<vulkan::VKState &>(renderer).surface_cache.check_for_surface(mem, src.address.address(), copy_operation, dst.address.address())) {
             trace_copy("from a colour surface (synced first)");
             // let the vulkan surface cache handle it
             return;
@@ -249,8 +247,8 @@ COMMAND(handle_transfer_copy) {
 
 COMMAND(handle_transfer_downscale) {
     TRACY_FUNC_COMMANDS(handle_transfer_downscale);
-    SceGxmTransferImage *src = helper.pop<SceGxmTransferImage *>();
-    SceGxmTransferImage *dst = helper.pop<SceGxmTransferImage *>();
+    auto src = std::shared_ptr<SceGxmTransferImage>(helper.pop<SceGxmTransferImage *>());
+    auto dst = std::shared_ptr<SceGxmTransferImage>(helper.pop<SceGxmTransferImage *>());
 
     if (src->format != dst->format) {
         LOG_ERROR_ONCE("Unhandled format conversion from 0x{:0X} to 0x{:0X}", fmt::underlying(src->format), fmt::underlying(dst->format));
@@ -325,9 +323,6 @@ COMMAND(handle_transfer_downscale) {
                 break;
             }
         }
-
-        delete src;
-        delete dst;
     };
 
     if (renderer.current_backend == Backend::Vulkan && renderer.features.enable_memory_mapping && !renderer.disable_surface_sync) {

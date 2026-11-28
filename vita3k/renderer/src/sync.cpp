@@ -130,7 +130,7 @@ void finish(State &state, Context *context) {
         auto callback = [&]() {
             promise.set_value();
         };
-        vk_state.request_queue.push(vulkan::CallbackRequest{ new vulkan::CallbackRequestFunction(callback) });
+        vk_state.request_queue.push(vulkan::CallbackRequest{ std::make_shared<vulkan::CallbackRequestFunction>(callback) });
         promise.get_future().wait();
     }
 }

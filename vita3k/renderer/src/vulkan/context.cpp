@@ -293,10 +293,10 @@ void VKContext::wait_thread_function(const MemState &mem) {
                            renderer::subject_done(request.sync, request.timestamp);
                        },
                        [&](CallbackRequest &request) {
-                           if (request.callback) {
+                           if (request.wait_for_gpu)
+                               wait_for_fences();
+                           if (request.callback)
                                (*request.callback)();
-                               delete request.callback;
-                           }
                        } },
             *wait_request);
     }
