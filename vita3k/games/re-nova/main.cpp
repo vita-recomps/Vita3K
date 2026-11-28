@@ -18,14 +18,13 @@
 // re-nova.exe: Phantasy Star Nova (PCSG00351, update 1.05) on the shared single-game frontend
 // (game-frontend/profile.h). The re-nova project's docs describe the port.
 //
-// Phase 1 of that project: the game's profile and settings; the player's English patch read as a
-// rePatch mod ([game] repatch) and named in the log; the memory mapping that draws the player
-// character. Its saves, controls (the game's PS TV mode) and resolution come in later phases.
-
 #include "../../game-frontend/profile.h"
 
 #include <config/state.h>
+#include <cpu/aot.h>
 #include <emuenv/state.h>
+#include <mem/ptr.h>
+#include <packages/sfo.h>
 #include <util/log.h>
 
 #include <cstdlib>
@@ -39,6 +38,46 @@ namespace layout = game_frontend::layout;
 
 constexpr const char *TITLE_ID = "PCSG00351";
 constexpr const char *PATCH_CPK = "NOVA_FileList_Vita_patch.cpk";
+
+constexpr Address FRAME_CLOCK_PTR = 0x82474314;
+constexpr Address FRAME_RATE_OFFSET = 0xcc;
+constexpr Address PHYSICS_STEP = 0x82474334;
+constexpr float VITA_PHYSICS_STEP = 1.0f / 31.0f;
+constexpr float PHYSICS_STEP_60 = 0.016f;
+
+bool apply_frame_rate(EmuEnvState &emuenv, int current, int requested) {
+    auto &mem = emuenv.mem;
+    const Ptr<Address> clock_ptr(FRAME_CLOCK_PTR);
+    const Ptr<float> step_ptr(PHYSICS_STEP);
+    if (emuenv.app_info.app_version != "1.05" || !clock_ptr.valid(mem) || !step_ptr.valid(mem))
+        return false;
+
+    const Address clock = *clock_ptr.get(mem);
+    const Ptr<uint32_t> rate_ptr(clock + FRAME_RATE_OFFSET);
+    if (!clock || clock % alignof(uint32_t) || rate_ptr.address() < clock || !rate_ptr.valid(mem))
+        return false;
+
+    uint32_t &rate = *rate_ptr.get(mem);
+    float &step = *step_ptr.get(mem);
+    // Startup sets both values in 1.05. Wait for that initialization and for the pair we expect.
+    if (rate != static_cast<uint32_t>(current) || step != (current == 30 ? VITA_PHYSICS_STEP : PHYSICS_STEP_60))
+        return false;
+
+    if (requested == 60 && !aot_module_has_feature("eboot", "camera_vblank_step")) {
+        static const bool warned = [] {
+            LOG_WARN("frame_rate: 60 FPS requires an eboot module built with the camera timing override");
+            return true;
+        }();
+        (void)warned;
+        return false;
+    }
+
+    // The limiter waits 60 / rate vblanks. Physics uses a separate fixed step.
+    step = requested == 30 ? VITA_PHYSICS_STEP : PHYSICS_STEP_60;
+    rate = requested;
+    LOG_INFO("frame_rate: {} FPS (physics step {})", requested, step);
+    return true;
+}
 
 // The update's archive, which the English patch replaces (whole: it holds 1.05's files too), by size.
 // Sizes are enough to tell the builds apart and cost nothing at start; the project's hashes.md has
@@ -72,6 +111,10 @@ void log_patch(const EmuEnvState &emuenv, bool repatch) {
 game_frontend::IniLayout ini_layout() {
     using Kind = game_frontend::SettingSpec::Kind;
     const std::string id = "re-nova", exe = id + game_frontend::executable_suffix;
+    game_frontend::SettingSpec frame_rate{ "frame_rate", Kind::Choice, "30", 0, 0, { "30", "60" },
+        "30 FPS as on the Vita, or experimental 60 FPS on update 1.05." };
+    frame_rate.title = "Frame rate";
+    frame_rate.live = true;
     game_frontend::SettingSpec mapping{ "memory_mapping", Kind::Choice, "double-buffer", 0, 0,
         { "double-buffer", "external-host", "page-table", "native-buffer" },
         "How the game's memory is shared with the graphics card (Vita3K's memory mapping). Read\n"
@@ -82,7 +125,7 @@ game_frontend::IniLayout ini_layout() {
         {
             layout::paths(TITLE_ID, id, exe),
             { "display", "",
-                { layout::scale(), layout::window_scale(), layout::fullscreen(id, exe), layout::vsync(),
+                { layout::scale(), frame_rate, layout::window_scale(), layout::fullscreen(id, exe), layout::vsync(),
                     layout::filter(), layout::fps_counter(), layout::mipmaps(true), mapping } },
             layout::audio(),
             { "controls", "",
@@ -132,6 +175,11 @@ int main(int argc, char *argv[]) {
     };
     profile.hooks.before_mods = [](game_frontend::Context &ctx, bool repatch) {
         log_patch(*ctx.emuenv, repatch);
+    };
+    profile.hooks.on_tick = [current = 30](game_frontend::Context &ctx) mutable {
+        const int requested = ctx.settings->values.get("display.frame_rate") == "60" ? 60 : 30;
+        if (requested != current && apply_frame_rate(*ctx.emuenv, current, requested))
+            current = requested;
     };
     return game_frontend::run(profile, argc, argv);
 }
