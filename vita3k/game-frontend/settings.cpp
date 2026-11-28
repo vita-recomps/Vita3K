@@ -510,8 +510,8 @@ SettingSpec filter() {
 #else
     const char *const target = "the window";
 #endif
-    SettingSpec s{ "filter", Kind::Choice, "Bilinear", 0, 0, { "Bilinear", "Nearest", "Bicubic", "FXAA", "FSR" },
-        fmt::format("How the picture is scaled to {}: Bilinear, Nearest, Bicubic, FXAA, FSR.", target) };
+    SettingSpec s{ "filter", Kind::Choice, "Bilinear", 0, 0, { "Bilinear", "Nearest", "Bicubic", "FXAA", "CAS", "FSR" },
+        fmt::format("How the picture is scaled to {}: Bilinear, Nearest, Bicubic, FXAA, CAS, FSR.", target) };
     s.live = true;
     return s;
 }
