@@ -189,6 +189,7 @@ std::string format_float(double v) {
 }
 
 std::string shown_value(const SettingsMenu::Row &row) {
+    if (!row.android_action.empty()) return "Open";
     // a choice with labels shows its label (an unset one its example's, as the default)
     if (!row.spec.choice_labels.empty()) {
         const std::string &value = row.value.empty() ? row.spec.value : row.value;
@@ -217,6 +218,8 @@ SettingsMenu::SettingsMenu(const IniLayout &layout, const Values &values, const 
     visible = true;
     m_allow_input_on_pause = true;
     m_column = FIRST_COLUMN;
+    m_mouse_camera_enabled = values.values.contains("mouse.camera") && values.get_bool("mouse.camera");
+    m_mouse_capture_keys = binding_keys(values.get("mouse.capture_key"), "");
     const bool has_gamepad = std::any_of(layout.sections.begin(), layout.sections.end(), [](const IniSection &s) { return s.name == "gamepad"; });
     for (const auto &section : layout.sections) {
         if (section.name == "keyboard" && has_gamepad) {
@@ -304,6 +307,16 @@ SettingsMenu::SettingsMenu(const IniLayout &layout, const Values &values, const 
             row.editable = spec.kind != Kind::Path && (spec.kind != Kind::Text || spec.text_entry);
             page.rows.push_back(std::move(row));
         }
+#ifdef __ANDROID__
+        const auto action = [&](const char *key, const char *title, const char *help) {
+            Row row; row.android_action = key; row.spec.key = key; row.spec.title = title;
+            row.spec.help = help; row.spec.live = true; row.editable = true;
+            page.rows.push_back(std::move(row));
+        };
+        if (section.name == "debug") {
+            action("diagnostic", "Share diagnostic report", "Share existing setup/runtime logs with device and application details.");
+        }
+#endif
         // a page with nothing to change from here (paths) stays in the settings file only
         if (std::any_of(page.rows.begin(), page.rows.end(), [](const Row &r) { return r.editable; }))
             m_pages.push_back(std::move(page));
@@ -349,6 +362,7 @@ void SettingsMenu::request_close() {
 }
 
 void SettingsMenu::step(Row &row, int direction) {
+    if (!row.android_action.empty()) { m_changes.push_back({ "android_action", row.android_action, "open" }); return; }
     if (!row.editable || row.exit)
         return;
     const SettingSpec &spec = row.spec;
@@ -397,6 +411,8 @@ void SettingsMenu::step(Row &row, int direction) {
     if (next == row.value)
         return;
     row.value = next;
+    if (row.section == "mouse" && spec.key == "camera")
+        m_mouse_camera_enabled = next == "true";
     if (!spec.live)
         row.needs_restart = true;
     m_changes.push_back({ row.section, spec.key, next });
@@ -639,6 +655,9 @@ void SettingsMenu::assign_key(Row &row, size_t column, const std::string &key) {
     else
         keys.push_back(key);
     set_keys(row, keys);
+    if (m_note.empty() && m_mouse_camera_enabled
+        && std::any_of(m_mouse_capture_keys.begin(), m_mouse_capture_keys.end(), [&](const auto &capture) { return same(key, capture); }))
+        m_note = key + " now has a game binding. Middle-click can still capture the cursor.";
 }
 
 // A gamepad button or trigger into one of a row's two gamepad cells (slot 0, 1), as assign_key does it
@@ -803,7 +822,7 @@ void SettingsMenu::bind_mouse(int sdl_button) {
             return;
         end_listen();
         assign_key(*row, m_column, key_name(mouse_button_code(sdl_button)));
-        if (sdl_button == SDL_BUTTON_LEFT || sdl_button == SDL_BUTTON_RIGHT)
+        if (m_note.empty() && (sdl_button == SDL_BUTTON_LEFT || sdl_button == SDL_BUTTON_RIGHT))
             m_note = key_name(mouse_button_code(sdl_button)) + " presses it while the mouse camera has the cursor (otherwise it touches the screen).";
     }
     refresh();
@@ -857,6 +876,10 @@ void SettingsMenu::on_button_pressed(pad_button button, bool is_auto_repeat) {
         Row *row = nullptr;
         if (!m_pages.empty() && m_row < m_pages[m_page].rows.size())
             row = &m_pages[m_page].rows[m_row];
+        if (row && !row->android_action.empty() && (button == pad_button::cross || button == pad_button::start || button == pad_button::dpad_left || button == pad_button::dpad_right || button == pad_button::ls_left || button == pad_button::ls_right)) {
+            if (!is_auto_repeat && (button == pad_button::cross || button == pad_button::start)) step(*row, 1);
+            goto done;
+        }
         // Exit the game: Cross (or Start) once arms it, a second time exits; any other button disarms.
         // Reset all controls the same way.
         const bool confirm = button == pad_button::cross || button == pad_button::start;
@@ -1039,7 +1062,7 @@ done:
             // the value, shortened with "..." to fit its column (a network adapter's long name)
             const bool confirmed = row.exit || row.reset; // Cross twice
             const bool armed = (row.exit && m_exit_armed) || (row.reset && m_reset_armed);
-            const std::string arrows_l = row.editable && !confirmed && selected && row.spec.kind != Kind::Bool ? "<  " : "";
+            const std::string arrows_l = row.editable && !confirmed && row.android_action.empty() && selected && row.spec.kind != Kind::Bool ? "<  " : "";
             const std::string arrows_r = (arrows_l.empty() ? "" : "  >") + std::string(row.needs_restart ? "  *" : "");
             constexpr uint16_t VALUE_W = PANEL_W - 284;
             std::string value = !confirmed ? shown_value(row)
@@ -1108,6 +1131,8 @@ done:
             help += (help.empty() ? "" : " ") + std::string("Change it in the settings file.");
         else if (row.spec.text_entry && !m_text_editing.load())
             help += (help.empty() ? "" : " ") + std::string("Cross: edit.");
+        else if (!row.android_action.empty())
+            help += (help.empty() ? "" : " ") + std::string("Cross: open.");
     }
     // the help gets the space down to the note (what a binding did, or what needs a restart) or the
     // hints; a longer one is cut at a word
@@ -1141,9 +1166,9 @@ done:
                                               : "Up/Down: choose    Left/Right, Cross: change    L1/R1: page    Circle: close";
 #else
     const std::string menu_hints = on_binding
-        ? fmt::format("Left/Right: column    Cross: change    Square: clear    Triangle: default    L1/R1 ({}/{}): page    Circle ({}), F1: close",
+        ? fmt::format("Left/Right: column    Cross/Enter: change    Square: clear    Triangle: default    L1/R1 ({}/{}): page    Circle ({}), F1: close",
               bound("l", "Q"), bound("r", "E"), bound("circle", "C"))
-        : fmt::format("Up/Down: choose    Left/Right, Cross: change    L1/R1 ({}/{}): page    Circle ({}), Esc, F1: close",
+        : fmt::format("Up/Down: choose    Left/Right, Cross/Enter: change    L1/R1 ({}/{}): page    Circle ({}), Esc, F1: close",
               bound("l", "Q"), bound("r", "E"), bound("circle", "C"));
 #endif
     const std::string hints = m_text_editing.load()

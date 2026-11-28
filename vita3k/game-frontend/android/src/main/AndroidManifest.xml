@@ -89,5 +89,10 @@
 			android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation">
 			<meta-data android:name="game.library" android:value="${gameLibrary}" />
 		</activity>
+		<provider
+			android:name="io.github.vitarecomps.frontend.DiagnosticProvider"
+			android:authorities="${applicationId}.importdiag"
+			android:exported="false"
+			android:grantUriPermissions="true" />
 	</application>
 </manifest>

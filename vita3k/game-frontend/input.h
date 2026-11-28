@@ -57,6 +57,9 @@ std::string default_gamepad_lines();
 // added to `warnings`. An empty value unbinds the Vita button; a line left out keeps the binding it has.
 void apply_bindings(EmuEnvState &emuenv, const std::map<std::string, std::string> &keyboard,
     const std::map<std::string, std::string> &gamepad, std::vector<std::string> &warnings);
+// Updates CtrlState::claimed_gamepad_buttons from the active [gamepad] and [touch] bindings so
+// remapped physical buttons (leftstick, rightstick, guide) suppress Vita3K's implicit L3/R3/PS.
+void sync_claimed_gamepad_buttons(EmuEnvState &emuenv, const std::vector<short> &touch_buttons = {});
 
 // an SDL scancode as a physical key code (both are USB HID keyboard usages)
 input::PhysicalKeyCode key_from_scancode(int scancode);
@@ -203,6 +206,7 @@ public:
     using Target = std::function<std::optional<std::pair<float, float>>(EmuEnvState &)>;
     void configure(const std::vector<TouchBinding> &touches, std::vector<std::string> &warnings,
         const std::map<std::string, Target> &targets = {});
+    std::vector<short> claimed_gamepad_buttons() const;
     // once a frame: the held fingers into the touch state
     void update(EmuEnvState &emuenv, const Keyboard &keyboard);
 

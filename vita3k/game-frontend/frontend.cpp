@@ -99,6 +99,7 @@ void android_set_session(app::AppSessionController *session); // android.cpp
 void android_configure_screen_controls(bool enabled, int size, int opacity, const std::vector<std::pair<float, float>> &spots,
     uint32_t latch_button, const std::string &latch_label);
 void android_settings_menu_open(bool open);
+void android_menu_action(const std::string &action);
 #endif
 
 namespace {
@@ -610,6 +611,11 @@ int run(Profile &profile, int argc, char *argv[]) {
     // in a folder of their own.
     ctx.data_dir = ctx.player == 1 ? ctx.exe_dir / profile.id / "" : ctx.exe_dir / profile.id / fmt::format("player{}", ctx.player) / "";
     fs::create_directories(ctx.data_dir);
+    const fs::path step_error = ctx.data_dir / "step-error.txt";
+    if (!install_firmware.empty() || !install_content.empty() || !remove_mods.empty()) {
+        boost::system::error_code ec;
+        fs::remove(step_error, ec);
+    }
     root_paths.set_config_path(ctx.data_dir);
     root_paths.set_log_path(ctx.data_dir);
     root_paths.set_shared_path(ctx.data_dir);
@@ -845,6 +851,17 @@ int run(Profile &profile, int argc, char *argv[]) {
     }
     if (emuenv.cfg.controller_binds.size() != 15 || emuenv.cfg.controller_axis_binds.size() != 6)
         app::reset_controller_binding(emuenv);
+    constexpr auto left_stick_key = "game.left_stick_sensitivity";
+    constexpr auto right_stick_key = "game.right_stick_sensitivity";
+    const auto apply_stick_sensitivity = [&](const std::string &key, float &stick_sensitivity) {
+        if (!settings.values.values.contains(key))
+            return;
+        const float sensitivity = static_cast<float>(settings.values.get_float(key));
+        std::lock_guard lock(emuenv.ctrl.mutex);
+        stick_sensitivity = sensitivity;
+    };
+    apply_stick_sensitivity(left_stick_key, emuenv.ctrl.left_stick_sensitivity);
+    apply_stick_sensitivity(right_stick_key, emuenv.ctrl.right_stick_sensitivity);
     {
         std::vector<std::string> binding_warnings;
         apply_bindings(emuenv, settings.keyboard, settings.gamepad, binding_warnings);
@@ -946,15 +963,10 @@ int run(Profile &profile, int argc, char *argv[]) {
                 if (fs::is_directory(emuenv.vita_fs_path / "ux0" / "rePatch" / id))
                     refresh_packaged_mods(emuenv.vita_fs_path, id);
         LOG_INFO("{} {}", remove_mods.empty() || !install_content.empty() ? "Installation" : "Removal", ok ? "done" : "failed");
-        {
-            const fs::path step_error = ctx.data_dir / "step-error.txt";
-            boost::system::error_code ec;
-            fs::remove(step_error, ec);
-            if (!ok && !problems.empty()) {
-                fs::ofstream file(step_error, std::ios::binary);
-                for (const auto &line : problems)
-                    file << line << '\n';
-            }
+        if (!ok && !problems.empty()) {
+            fs::ofstream file(step_error, std::ios::binary);
+            for (const auto &line : problems)
+                file << line << '\n';
         }
 #ifdef _WIN32
         CoUninitialize();
@@ -1014,6 +1026,7 @@ int run(Profile &profile, int argc, char *argv[]) {
     {
         std::vector<std::string> touch_warnings;
         touches.configure(settings.touches, touch_warnings, profile.touch_targets);
+        sync_claimed_gamepad_buttons(emuenv, touches.claimed_gamepad_buttons());
         for (const auto &line : touch_warnings)
             LOG_WARN("{}.ini: {}", profile.id, line);
     }
@@ -1034,7 +1047,25 @@ int run(Profile &profile, int argc, char *argv[]) {
             profile.camera_angles, profile.mouse_turn);
         std::vector<std::string> warnings;
         capture_keys = parse_keys(settings.values.get("mouse.capture_key"), "mouse.capture_key", warnings);
-        if (report)
+        if (settings.values.get_bool("mouse.camera")) {
+            const auto uses_key = [&](input::PhysicalKeyCode key, const std::string &list) {
+                std::vector<std::string> ignored;
+                const auto codes = parse_keys(list, "", ignored);
+                return std::find(codes.begin(), codes.end(), key) != codes.end();
+            };
+            std::erase_if(capture_keys, [&](input::PhysicalKeyCode key) {
+                const bool bound = std::any_of(button_bindings().begin(), button_bindings().end(), [&](const auto &button) {
+                    const auto it = settings.keyboard.find(button.name);
+                    return uses_key(key, it == settings.keyboard.end() ? button.keys : it->second);
+                }) || std::any_of(settings.touches.begin(), settings.touches.end(), [&](const auto &touch) {
+                    return uses_key(key, touch.keys);
+                });
+                if (bound)
+                    warnings.push_back("mouse.capture_key: " + key_name(key) + " already has a game binding. Middle-click can still capture the cursor.");
+                return bound;
+            });
+        }
+        if (report || !warnings.empty())
             for (const auto &line : warnings)
                 LOG_WARN("{}.ini: {}", profile.id, line);
         if (!settings.values.get_bool("mouse.camera"))
@@ -1076,6 +1107,13 @@ int run(Profile &profile, int argc, char *argv[]) {
     // are written to the settings file here, on the main thread, and the live ones applied.
     app::AppSessionController *session_ptr = nullptr; // set once the session exists, below
     std::shared_ptr<SettingsMenu> menu;
+    const auto toggle_capture = [&](input::PhysicalKeyCode key) {
+        if (!mouse_camera_on() || menu
+            || std::find(capture_keys.begin(), capture_keys.end(), key) == capture_keys.end())
+            return false;
+        capture_wanted = !capture_wanted;
+        return true;
+    };
     bool select_held = false, select_used = false;
     std::chrono::steady_clock::time_point select_down{};
 #ifdef __ANDROID__
@@ -1093,6 +1131,9 @@ int run(Profile &profile, int argc, char *argv[]) {
     };
 #endif
     const auto apply_change = [&](const SettingsMenu::Change &change) {
+#ifdef __ANDROID__
+        if (change.section == "android_action") { android_menu_action(change.key); return; }
+#endif
         std::string error;
         if (!save_setting(settings_file(ctx.exe_dir, profile.id, ctx.player), change.section, change.key, change.value, error))
             LOG_ERROR("Settings menu: {}", error);
@@ -1108,14 +1149,20 @@ int run(Profile &profile, int argc, char *argv[]) {
                     if (touch.name == name)
                         (keys ? touch.keys : touch.gamepad) = change.value;
                 touches.configure(settings.touches, warnings, profile.touch_targets);
+                if (!keys)
+                    sync_claimed_gamepad_buttons(emuenv, touches.claimed_gamepad_buttons());
             } else {
                 const bool is_keyboard = change.section == "keyboard";
                 (is_keyboard ? settings.keyboard : settings.gamepad)[change.key] = change.value;
                 const std::map<std::string, std::string> line{ { change.key, change.value } };
                 apply_bindings(emuenv, is_keyboard ? line : std::map<std::string, std::string>{},
                     is_keyboard ? std::map<std::string, std::string>{} : line, warnings);
+                if (!is_keyboard)
+                    sync_claimed_gamepad_buttons(emuenv, touches.claimed_gamepad_buttons());
                 keyboard.refresh(emuenv);
             }
+            if (change.section != "gamepad")
+                configure_mouse(false);
             for (const auto &warning : warnings)
                 LOG_WARN("Settings menu: {}", warning);
             return;
@@ -1138,6 +1185,10 @@ int run(Profile &profile, int argc, char *argv[]) {
         }
         else if (key == "audio.volume")
             emuenv.audio.set_global_volume(std::clamp(std::atoi(change.value.c_str()), 0, 100) / 100.f);
+        else if (key == left_stick_key)
+            apply_stick_sensitivity(key, emuenv.ctrl.left_stick_sensitivity);
+        else if (key == right_stick_key)
+            apply_stick_sensitivity(key, emuenv.ctrl.right_stick_sensitivity);
         else if (key == "multiplayer.peers" && !net_utils::local_adhoc_player())
             net_utils::set_lan_peers_text(change.value); // the next broadcast goes to them (a game's lan mode)
         else if (change.section == "mouse") {
@@ -1264,7 +1315,8 @@ int run(Profile &profile, int argc, char *argv[]) {
                     menu->bind_key(event.key.scancode);
                 return;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                menu->bind_mouse(event.button.button);
+                if (event.button.which != SDL_TOUCH_MOUSEID && event.button.which != SDL_PEN_MOUSEID)
+                    menu->bind_mouse(event.button.button);
                 return;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
                 menu->bind_gamepad_button(event.gbutton.button);
@@ -1286,12 +1338,8 @@ int run(Profile &profile, int argc, char *argv[]) {
             // (on Android the system's Back and a device's extra buttons arrive as keys too: no keyboard)
             ctx.last_input = InputDevice::Keyboard;
 #endif
-            if (mouse_camera_on() && !menu
-                && std::find(capture_keys.begin(), capture_keys.end(), key_from_scancode(event.key.scancode)) != capture_keys.end()) {
-                // the capture key captures or releases the cursor, and is no Vita button then
-                capture_wanted = !capture_wanted;
+            if (toggle_capture(key_from_scancode(event.key.scancode)))
                 break;
-            }
             if (event.key.key == SDLK_ESCAPE && captured)
                 capture_wanted = false; // and Esc goes on to the game, if it is bound (it closes an open menu only)
             if (event.key.key == SDLK_F1) {
@@ -1301,6 +1349,11 @@ int run(Profile &profile, int argc, char *argv[]) {
                     open_menu();
             } else if (event.key.key == SDLK_ESCAPE && menu)
                 close_menu();
+#ifndef __ANDROID__
+            else if (menu && (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER)
+                && !(event.key.mod & SDL_KMOD_ALT))
+                menu->on_button_pressed(overlay::pad_button::cross, false);
+#endif
             else if (event.key.key == SDLK_F5) {
                 // "that just happened": a line in the log to find the moment by in a bug report. A
                 // binding on F5 still presses its button
@@ -1334,12 +1387,15 @@ int run(Profile &profile, int argc, char *argv[]) {
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP: {
             const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+            const bool physical_mouse = event.button.which != SDL_TOUCH_MOUSEID && event.button.which != SDL_PEN_MOUSEID;
             mouse_used();
 #ifndef __ANDROID__
             // a real mouse's click, not one SDL made from a touch or a pen (a touchscreen PC, the Steam Deck)
-            if (down && event.button.which != SDL_TOUCH_MOUSEID && event.button.which != SDL_PEN_MOUSEID)
+            if (down && physical_mouse)
                 ctx.last_input = InputDevice::Keyboard;
 #endif
+            if (down && physical_mouse && toggle_capture(mouse_button_code(event.button.button)))
+                break;
             if (event.button.button == SDL_BUTTON_MIDDLE && down && mouse_camera_on() && !menu)
                 capture_wanted = !capture_wanted;
             // the side buttons are bindings ([keyboard], [touch]: MouseX1, MouseX2)

@@ -2,6 +2,45 @@ add_compile_options(-w)
 
 include(${CMAKE_ROOT}/Modules/ExternalProject.cmake)
 
+# Publish only a complete download so an interrupted configure can be retried.
+function(download_external_archive url archive sha256)
+	if(EXISTS "${archive}")
+		file(SHA256 "${archive}" actual_hash)
+		if(actual_hash STREQUAL sha256)
+			return()
+		endif()
+	endif()
+	file(DOWNLOAD "${url}" "${archive}.part" SHOW_PROGRESS
+		TIMEOUT 240 INACTIVITY_TIMEOUT 30 STATUS download_status)
+	list(GET download_status 0 download_code)
+	if(NOT download_code EQUAL 0)
+		file(REMOVE "${archive}.part")
+		message(FATAL_ERROR "Downloading ${url} failed: ${download_status}")
+	endif()
+	file(SHA256 "${archive}.part" actual_hash)
+	if(NOT actual_hash STREQUAL sha256)
+		file(REMOVE "${archive}.part")
+		message(FATAL_ERROR "SHA-256 mismatch for ${url}")
+	endif()
+	file(RENAME "${archive}.part" "${archive}")
+endfunction()
+
+# Extract into a staging folder first so a cancelled configure never leaves a half-unpacked tree.
+function(extract_external_archive dest)
+	if(EXISTS "${dest}")
+		return()
+	endif()
+	set(staging "${dest}.extract")
+	file(REMOVE_RECURSE "${staging}")
+	file(MAKE_DIRECTORY "${staging}")
+	execute_process(COMMAND ${ARGN} WORKING_DIRECTORY "${staging}" RESULT_VARIABLE extract_code)
+	if(NOT extract_code EQUAL 0)
+		file(REMOVE_RECURSE "${staging}")
+		message(FATAL_ERROR "Extracting into ${dest} failed (exit ${extract_code})")
+	endif()
+	file(RENAME "${staging}" "${dest}")
+endfunction()
+
 # Make option() in all external projects do nothing when a normal variable of the
 # same name exists. The normal variable is not removed. The cache entry is not
 # created or updated and is ignored if it exists.
@@ -144,20 +183,22 @@ option(YAML_CPP_BUILD_CONTRIB "Enable contrib stuff in library" OFF)
 add_subdirectory(yaml-cpp EXCLUDE_FROM_ALL)
 
 if(USE_DISCORD_RICH_PRESENCE)
-	if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/discord_game_sdk.zip")
-		message(STATUS "Downloading discord gamesdk...")
-		file(DOWNLOAD https://dl-game-sdk.discordapp.net/latest/discord_game_sdk.zip
-			"${CMAKE_BINARY_DIR}/external/discord_game_sdk.zip"
-			SHOW_PROGRESS
-			EXPECTED_HASH SHA256=6757bb4a1f5b42aa7b6707cbf2158420278760ac5d80d40ca708bb01d20ae6b4)
-	endif()
+	download_external_archive(https://dl-game-sdk.discordapp.net/latest/discord_game_sdk.zip
+		"${CMAKE_BINARY_DIR}/external/discord_game_sdk.zip" 6757bb4a1f5b42aa7b6707cbf2158420278760ac5d80d40ca708bb01d20ae6b4)
 
 	if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/discord_game_sdk")
-		file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external/discord_game_sdk")
+		set(discord_staging "${CMAKE_BINARY_DIR}/external/discord_game_sdk.extract")
+		file(REMOVE_RECURSE "${discord_staging}")
+		file(MAKE_DIRECTORY "${discord_staging}")
 		execute_process(COMMAND ${CMAKE_COMMAND} -E tar xf "${CMAKE_BINARY_DIR}/external/discord_game_sdk.zip"
-			WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/external/discord_game_sdk")
-		file(RENAME "${CMAKE_BINARY_DIR}/external/discord_game_sdk/lib/x86_64/discord_game_sdk.so"
-			"${CMAKE_BINARY_DIR}/external/discord_game_sdk/lib/x86_64/libdiscord_game_sdk.so")
+			WORKING_DIRECTORY "${discord_staging}" RESULT_VARIABLE discord_extract_code)
+		if(NOT discord_extract_code EQUAL 0)
+			file(REMOVE_RECURSE "${discord_staging}")
+			message(FATAL_ERROR "Extracting discord_game_sdk.zip failed (exit ${discord_extract_code})")
+		endif()
+		file(RENAME "${discord_staging}/lib/x86_64/discord_game_sdk.so"
+			"${discord_staging}/lib/x86_64/libdiscord_game_sdk.so")
+		file(RENAME "${discord_staging}" "${CMAKE_BINARY_DIR}/external/discord_game_sdk")
 	endif()
 
 	add_library(discord-rpc STATIC
@@ -227,16 +268,19 @@ target_include_directories(CLI11 INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/cli11")
 add_library(vulkan INTERFACE)
 target_include_directories(vulkan INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/VulkanMemoryAllocator-Hpp/Vulkan-Headers/include")
 if(APPLE)
-	if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/MoltenVK-macos.tar")
-		message(STATUS "Downloading MoltenVK...")
-		file(DOWNLOAD https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.1/MoltenVK-macos.tar
-			"${CMAKE_BINARY_DIR}/external/MoltenVK-macos.tar"
-			SHOW_PROGRESS
-			EXPECTED_HASH SHA256=5ea0c259df7ded9a275444820f09cced54d6e5a7c7a31d262de62a5cdb7e15cf)
-	endif()
+	download_external_archive(https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.1/MoltenVK-macos.tar
+		"${CMAKE_BINARY_DIR}/external/MoltenVK-macos.tar" 5ea0c259df7ded9a275444820f09cced54d6e5a7c7a31d262de62a5cdb7e15cf)
 	if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/MoltenVK")
-		execute_process(COMMAND tar xf "${CMAKE_BINARY_DIR}/external/MoltenVK-macos.tar" --strip-components=1 MoltenVK/MoltenVK 
-			WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/external")
+		set(moltenvk_staging "${CMAKE_BINARY_DIR}/external/MoltenVK.extract")
+		file(REMOVE_RECURSE "${moltenvk_staging}")
+		file(MAKE_DIRECTORY "${moltenvk_staging}")
+		execute_process(COMMAND tar xf "${CMAKE_BINARY_DIR}/external/MoltenVK-macos.tar" --strip-components=2 MoltenVK/MoltenVK
+			WORKING_DIRECTORY "${moltenvk_staging}" RESULT_VARIABLE moltenvk_extract_code)
+		if(NOT moltenvk_extract_code EQUAL 0)
+			file(REMOVE_RECURSE "${moltenvk_staging}")
+			message(FATAL_ERROR "Extracting MoltenVK-macos.tar failed (exit ${moltenvk_extract_code})")
+		endif()
+		file(RENAME "${moltenvk_staging}" "${CMAKE_BINARY_DIR}/external/MoltenVK")
 	endif()
 	target_include_directories(vulkan INTERFACE "${CMAKE_BINARY_DIR}/external/MoltenVK/include")
 	set(MOLTENVK_DYLIB "${CMAKE_BINARY_DIR}/external/MoltenVK/dylib/macOS/libMoltenVK.dylib" PARENT_SCOPE)
@@ -246,19 +290,11 @@ elseif(ANDROID AND NOT (CMAKE_BUILD_TYPE STREQUAL "Release"))
 		set(VALIDATION_BINARY "android-binaries-1.4.341.0")
 
 		# download it if not already done
-		if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/validation_layers.zip")
-			message(STATUS "Downloading validation layer...")
-			file(DOWNLOAD https://github.com/KhronosGroup/Vulkan-ValidationLayers/releases/download/vulkan-sdk-1.4.341.0/${VALIDATION_BINARY}.zip
-				"${CMAKE_BINARY_DIR}/external/validation_layers.zip"
-				SHOW_PROGRESS
-				EXPECTED_HASH SHA256=b47aa5c4a65d9787ef051276587f50cfd70dcd822a8c1b7d4d4a92e28e993459)
-		endif()
+		download_external_archive(https://github.com/KhronosGroup/Vulkan-ValidationLayers/releases/download/vulkan-sdk-1.4.341.0/${VALIDATION_BINARY}.zip
+			"${CMAKE_BINARY_DIR}/external/validation_layers.zip" b47aa5c4a65d9787ef051276587f50cfd70dcd822a8c1b7d4d4a92e28e993459)
 
-		if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/validation_layers")
-			file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external/validation_layers")
-			execute_process(COMMAND ${CMAKE_COMMAND} -E tar xf "${CMAKE_BINARY_DIR}/external/validation_layers.zip"
-				WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/external/validation_layers")
-		endif()
+		extract_external_archive("${CMAKE_BINARY_DIR}/external/validation_layers"
+			${CMAKE_COMMAND} -E tar xf "${CMAKE_BINARY_DIR}/external/validation_layers.zip")
 
 		file(COPY "${CMAKE_BINARY_DIR}/external/validation_layers/${VALIDATION_BINARY}/${ANDROID_ABI}" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/../android/prebuilt")
 	endif()
@@ -303,36 +339,20 @@ if(NOT OPENSSL_FOUND OR FORCE_BUILD_OPENSSL_MAC)
 	if(MSVC)
 		message("OpenSSL not found, using prebuilt version")
 
-		if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/openssl.zip")
-			message(STATUS "Downloading openssl...")
-			file(DOWNLOAD https://download.firedaemon.com/FireDaemon-OpenSSL/openssl-4.0.1.zip
-				"${CMAKE_BINARY_DIR}/external/openssl.zip"
-				SHOW_PROGRESS
-				EXPECTED_HASH SHA256=b83e202841fc163f9fe18bbbd1e90e69117bf37cc41e1116701729c0c3bcd0b3)
-		endif()
+		download_external_archive(https://download.firedaemon.com/FireDaemon-OpenSSL/openssl-4.0.1.zip
+			"${CMAKE_BINARY_DIR}/external/openssl.zip" b83e202841fc163f9fe18bbbd1e90e69117bf37cc41e1116701729c0c3bcd0b3)
 
-		if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/openssl")
-			file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external/openssl")
-			execute_process(COMMAND ${CMAKE_COMMAND} -E tar xf "${CMAKE_BINARY_DIR}/external/openssl.zip"
-				WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/external/openssl")
-		endif()
+		extract_external_archive("${CMAKE_BINARY_DIR}/external/openssl"
+			${CMAKE_COMMAND} -E tar xf "${CMAKE_BINARY_DIR}/external/openssl.zip")
 
 		set(OPENSSL_ROOT_DIR "${CMAKE_BINARY_DIR}/external/openssl/x64" CACHE STRING "Path to OpenSSL root")
 	elseif(APPLE OR VITA3K_STATIC_OPENSSL)
 		message(STATUS "OpenSSL not found.")
-		if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/openssl.tar.gz")
-			message(STATUS "Downloading OpenSSL@4 from source...")
-			file(DOWNLOAD https://github.com/openssl/openssl/releases/download/openssl-4.0.1/openssl-4.0.1.tar.gz
-				"${CMAKE_BINARY_DIR}/external/openssl.tar.gz"
-				SHOW_PROGRESS
-				EXPECTED_HASH SHA256=2db3f3a0d6ea4b59e1f094ace2c8cd536dffb87cdc39084c5afa1e6f7f37dd09)
-		endif()
+		download_external_archive(https://github.com/openssl/openssl/releases/download/openssl-4.0.1/openssl-4.0.1.tar.gz
+			"${CMAKE_BINARY_DIR}/external/openssl.tar.gz" 2db3f3a0d6ea4b59e1f094ace2c8cd536dffb87cdc39084c5afa1e6f7f37dd09)
 
-		if(NOT EXISTS "${CMAKE_BINARY_DIR}/external/openssl")
-			file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external/openssl")
-			execute_process(COMMAND tar xfp "${CMAKE_BINARY_DIR}/external/openssl.tar.gz" -C openssl --strip-components=1
-				WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/external")
-		endif()
+		extract_external_archive("${CMAKE_BINARY_DIR}/external/openssl"
+			tar xfp "${CMAKE_BINARY_DIR}/external/openssl.tar.gz" --strip-components=1)
 
 		if (NOT EXISTS "${CMAKE_BINARY_DIR}/external/openssl/libssl.a" OR NOT EXISTS "${CMAKE_BINARY_DIR}/external/openssl/libcrypto.a")
 			message(STATUS "Building OpenSSL@4...")
@@ -424,9 +444,26 @@ if(NOT CURL_FOUND)
 		set(USE_NGHTTP2 OFF CACHE BOOL "" FORCE)
 		set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
 	endif()
+	set(CURL_COMMIT 68720b4837284335b2d63cb358f8f6ce65f5bc55) # release 8.21.0
+	# CI restores only the source checkout. FetchContent's clone stamp contains build paths.
+	if(DEFINED ENV{GITHUB_ACTIONS} AND NOT FETCHCONTENT_SOURCE_DIR_CURL
+			AND EXISTS "${FETCHCONTENT_BASE_DIR}/curl-src")
+		if(EXISTS "${FETCHCONTENT_BASE_DIR}/curl-src/.git")
+			execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${FETCHCONTENT_BASE_DIR}/curl-src"
+				OUTPUT_VARIABLE cached_curl_commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+		else()
+			set(cached_curl_commit "")
+		endif()
+		if(cached_curl_commit STREQUAL CURL_COMMIT)
+			set(FETCHCONTENT_SOURCE_DIR_CURL "${FETCHCONTENT_BASE_DIR}/curl-src")
+		else()
+			# Remove a partial or mismatched checkout left by an interrupted configure retry.
+			file(REMOVE_RECURSE "${FETCHCONTENT_BASE_DIR}/curl-src")
+		endif()
+	endif()
 	FetchContent_Declare(curl
 		GIT_REPOSITORY https://github.com/curl/curl.git
-		GIT_TAG        68720b4837284335b2d63cb358f8f6ce65f5bc55 # release 8.21.0
+		GIT_TAG        ${CURL_COMMIT}
 	)
 	FetchContent_MakeAvailable(curl)
 else()

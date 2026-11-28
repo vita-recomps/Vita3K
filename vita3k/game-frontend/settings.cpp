@@ -658,7 +658,7 @@ IniSection mouse() {
         "dialog and switching to another window release it until they are done.",
         {
             { "camera", Kind::Bool, "true", 0, 0, {}, "Off: the mouse is only the touchscreen, the cursor is never captured." },
-            { "capture_key", Kind::Text, "Tab", 0, 0, {}, "Key(s) that capture and release the cursor, up to two, as in [keyboard]." },
+            { "capture_key", Kind::Text, "Tab", 0, 0, {}, "Up to two keys or mouse buttons that capture and release the cursor. Game bindings take priority." },
             { "sensitivity", Kind::Float, "1", 0.2, 4, {},
                 "How far the camera turns for a mouse motion (0.2-4). 1: a full turn for 7200 counts (23 cm at\n"
                 "800 dpi). The camera turns at most as fast as with the stick fully pushed, so a flick faster\n"

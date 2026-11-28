@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <util/cooperative_pause.h>
+#include <threads/queue.h>
 
 #include <atomic>
 #include <chrono>
@@ -84,5 +85,20 @@ int main() {
     gate.resume();
     for (auto &thread : parked)
         require(thread.get(), "shutdown failed to release parked workers");
+
+    // process_exit can encounter a display queue with both push() and wait_space() blocked.
+    for (int i = 0; i < 500; ++i) {
+        Queue<int> full;
+        full.maxPendingCount_ = 1;
+        require(full.push(1), "could not fill the queue");
+        auto producer = std::async(std::launch::async, [&] { return full.push(2); });
+        auto waiter = std::async(std::launch::async, [&] { return full.wait_space(); });
+        Queue<int> empty;
+        auto consumer = std::async(std::launch::async, [&] { return empty.pop(); });
+        full.abort();
+        empty.abort();
+        require(!producer.get() && !waiter.get() && !consumer.get(), "an aborted queue admitted a waiter");
+    }
+
     std::cout << "PASS: fast path, pause/resume, late wake, 1000 resume races, 1000 cancellation races, nested re-entry contract, 8-worker shutdown\n";
 }

@@ -98,17 +98,23 @@ struct AudioState {
     AudioOutPortPtrs out_ports;
     AudioInPort in_port;
     std::string audio_backend;
-    float global_volume = 1;
 
     bool init(const std::string &adapter_name);
     void deinit();
     void stop_all_ports();
     void set_backend(const std::string &adapter_name);
     AudioOutPortPtr open_port(int nb_channels, int freq, int nb_sample);
+    int register_port(const AudioOutPortPtr &port, int id = 0);
     void audio_output(AudioOutPort &out_port, const void *buffer);
     void set_volume(AudioOutPort &out_port, float volume);
     void set_global_volume(float volume);
-    void switch_state(const bool pause);
+    void set_pause_state(bool paused, bool freeze);
     int get_rest_sample(AudioOutPort &out_port);
     void wake_all_ports();
+
+private:
+    void apply_volume(AudioOutPort &port);
+    float global_volume = 1;
+    bool muted = false;
+    bool suspended = false;
 };
