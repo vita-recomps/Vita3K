@@ -177,6 +177,16 @@ public:
     std::atomic<TextureOverride *> texture_override{ nullptr };
     void refresh_texture_override() { texture_override_changed = true; }
 
+    // From any thread (a front end's reload key): the render thread reads the import folder again
+    // (refresh_available_textures) at its next texture bind and uploads every texture again, to see
+    // a texture pack's changes without a restart
+    void request_replacement_refresh() { replacement_refresh = true; }
+
+private:
+    std::atomic<bool> replacement_refresh{ false };
+
+public:
+
     virtual void select(size_t index, const SceGxmTexture &texture) = 0;
     virtual void configure_texture(const SceGxmTexture &texture) = 0;
     virtual void upload_texture_impl(SceGxmTextureBaseFormat base_format, uint32_t width, uint32_t height, uint32_t mip_index, const void *pixels, int face, uint32_t pixels_per_stride) = 0;

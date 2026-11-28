@@ -83,7 +83,7 @@ game_frontend::IniLayout ini_layout() {
             layout::paths(TITLE_ID, id, exe),
             { "display", "",
                 { layout::scale(), layout::window_scale(), layout::fullscreen(id, exe), layout::vsync(),
-                    layout::filter(), layout::fps_counter(), layout::mipmaps(true), mapping } },
+                    layout::filter(), layout::fps_counter(), layout::mipmaps(true), layout::custom_textures(), mapping } },
             layout::audio(),
             { "controls", "",
                 { { "pstv_mode", Kind::Bool, "false", 0, 0, {},

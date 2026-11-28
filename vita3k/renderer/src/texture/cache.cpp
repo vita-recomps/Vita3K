@@ -701,6 +701,10 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
     // the TextureOverride changed its pictures: upload everything again
     if (texture_override_changed.exchange(false))
         invalidate_all_textures();
+    if (replacement_refresh.exchange(false)) {
+        refresh_available_textures();
+        invalidate_all_textures();
+    }
 
     size_t index = 0;
     bool configure = false;

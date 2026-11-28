@@ -369,6 +369,8 @@ Settings load_settings(const fs::path &dir, const std::string &id, const IniLayo
         out.filter = values.get("display.filter");
     if (declared("display.fps_counter"))
         out.fps_counter = values.get("display.fps_counter");
+    if (declared("display.custom_textures"))
+        out.custom_textures = values.get_bool("display.custom_textures");
     if (declared("audio.volume"))
         out.volume = values.get_int("audio.volume");
     if (declared("recompiled.enabled"))
@@ -400,6 +402,8 @@ Settings load_settings(const fs::path &dir, const std::string &id, const IniLayo
         out.gpu = values.get_int("debug.gpu");
     if (declared("debug.hitch_log_ms"))
         out.hitch_log_ms = values.get_int("debug.hitch_log_ms");
+    if (declared("debug.export_textures"))
+        out.export_textures = values.get("debug.export_textures");
     if (declared("debug.gpu_driver"))
         out.gpu_driver = values.get("debug.gpu_driver");
     out.keyboard = values.section("keyboard");
@@ -535,6 +539,17 @@ SettingSpec mipmaps(bool on_by_default) {
     return s;
 }
 
+SettingSpec custom_textures() {
+    SettingSpec s{ "custom_textures", Kind::Bool, "false", 0, 0, {},
+        "Draw replacement textures from textures/import/<title ID>/ (in this folder, shared by all\n"
+        "players) in place of the game's of the same hash: DDS (BC1-BC7, any size, its own mips) or\n"
+        "PNG, named <hash>.dds or .png as [debug] export_textures writes them. A DDS in an _SRGB format\n"
+        "is read as gamma corrected, whatever the game's texture says. F9 reads the folder again.\n"
+        "Off: the game's textures (and cheaper hashing). Read when the game starts." };
+    s.title = "Custom textures";
+    return s;
+}
+
 SettingSpec repatch() {
     SettingSpec s{ "repatch", Kind::Bool, "true", 0, 0, {},
         "Mods: read the files in the Vita file system's ux0/rePatch/<title ID>/ in place of the game's own,\n"
@@ -589,6 +604,11 @@ IniSection debug(const std::string &id) {
             { "gpu", Kind::Int, "0", 0, 16, {},
                 fmt::format("The graphics card: 0 picks one (a dedicated card first); N, the Nth of the\n"
                             "\"Vulkan devices\" {}/vita3k.log lists (for a laptop that starts on the wrong one).", id) },
+            { "export_textures", Kind::Choice, "off", 0, 0, { "off", "png", "dds" },
+                fmt::format("Write each texture the game draws to {}/textures/export/<title ID>/, named by its hash, to\n"
+                            "make [display] custom_textures from: png (to edit) or dds (the game's compression and\n"
+                            "mips). Player 1 only. It slows the first sight of each texture. Read when the game starts.",
+                    id) },
             { "hitch_log_ms", Kind::Int, "100", 0, 1000, {},
                 fmt::format("A game frame slower than this many milliseconds gets a \"Hitch\" line in {}/vita3k.log,\n"
                             "with the shaders built meanwhile (for a stutter report). 0: off.", id) },
