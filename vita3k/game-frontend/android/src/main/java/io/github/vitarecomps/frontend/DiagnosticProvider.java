@@ -38,11 +38,13 @@ public class DiagnosticProvider extends ContentProvider {
     }
 
     private File report(Uri uri) throws FileNotFoundException {
+        Context context = getContext();
+        if (context == null) throw new FileNotFoundException("Provider unavailable");
         if (uri.getPathSegments().size() != 1)
             throw new FileNotFoundException("Invalid report path");
         try {
             return DiagnosticStore.resolve(
-                    ImportDiagnostics.reportDirectory(getContext()), uri.getLastPathSegment());
+                    ImportDiagnostics.reportDirectory(context), uri.getLastPathSegment());
         } catch (IOException error) {
             throw new FileNotFoundException("Report unavailable");
         }

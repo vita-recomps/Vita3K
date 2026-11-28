@@ -281,6 +281,20 @@ void android_settings_menu_open(bool open) {
     });
 }
 
+// An Android action selected from the settings menu (e.g. "diagnostic" on the Debug page): flush the
+// async log first so the report captures the latest lines before Java reads vita3k.log
+void android_menu_action(const std::string &action) {
+    if (action == "diagnostic")
+        spdlog::apply_all([](const std::shared_ptr<spdlog::logger> &logger) { logger->flush(); });
+    call_game_activity("onMenuAction", "(Ljava/lang/String;)V", [&](JNIEnv *env, jobject activity, jmethodID method) {
+        jstring name = env->NewStringUTF(action.c_str());
+        if (!name)
+            return;
+        env->CallVoidMethod(activity, method, name);
+        env->DeleteLocalRef(name);
+    });
+}
+
 } // namespace game_frontend
 
 extern "C" JNIEXPORT void JNICALL
@@ -320,16 +334,6 @@ Java_io_github_vitarecomps_frontend_OnScreenControls_toggleMenu(JNIEnv *, jclass
         return;
     const std::lock_guard<std::mutex> ctrl_lock(s_emuenv->ctrl.mutex);
     s_emuenv->ctrl.injected_menu_toggle = true;
-}
-
-namespace game_frontend {
-void android_menu_action(const std::string &action) {
-    call_game_activity("onMenuAction", "(Ljava/lang/String;)V", [&](JNIEnv *env, jobject activity, jmethodID method) {
-        jstring name = env->NewStringUTF(action.c_str());
-        env->CallVoidMethod(activity, method, name);
-        env->DeleteLocalRef(name);
-    });
-}
 }
 
 namespace ime {

@@ -1062,7 +1062,7 @@ done:
             // the value, shortened with "..." to fit its column (a network adapter's long name)
             const bool confirmed = row.exit || row.reset; // Cross twice
             const bool armed = (row.exit && m_exit_armed) || (row.reset && m_reset_armed);
-            const std::string arrows_l = row.editable && !confirmed && selected && row.spec.kind != Kind::Bool ? "<  " : "";
+            const std::string arrows_l = row.editable && !confirmed && row.android_action.empty() && selected && row.spec.kind != Kind::Bool ? "<  " : "";
             const std::string arrows_r = (arrows_l.empty() ? "" : "  >") + std::string(row.needs_restart ? "  *" : "");
             constexpr uint16_t VALUE_W = PANEL_W - 284;
             std::string value = !confirmed ? shown_value(row)
@@ -1131,6 +1131,8 @@ done:
             help += (help.empty() ? "" : " ") + std::string("Change it in the settings file.");
         else if (row.spec.text_entry && !m_text_editing.load())
             help += (help.empty() ? "" : " ") + std::string("Cross: edit.");
+        else if (!row.android_action.empty())
+            help += (help.empty() ? "" : " ") + std::string("Cross: open.");
     }
     // the help gets the space down to the note (what a binding did, or what needs a restart) or the
     // hints; a longer one is cut at a word

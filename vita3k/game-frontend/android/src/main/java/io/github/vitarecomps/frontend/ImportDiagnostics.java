@@ -24,6 +24,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
@@ -39,11 +40,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** User-requested snapshots of existing logs; no periodic tracing or performance counters. */
 public final class ImportDiagnostics {
     private static final int LOG_TAIL_BYTES = 192 * 1024;
     private static final int ACCESS_LOG_BYTES = 512 * 1024;
+
+    private static final AtomicBoolean PREPARING = new AtomicBoolean(false);
 
     private static final ExecutorService REPORTS =
             Executors.newSingleThreadExecutor(
@@ -144,7 +148,6 @@ public final class ImportDiagnostics {
         File root = base(context);
         append(text, new File(root, "import-access.log"));
         append(text, new File(root, "setup.log"));
-        append(text, new File(new File(root, gameLibrary(context)), "setup.log"));
         append(text, new File(new File(root, gameLibrary(context)), "vita3k.log"));
         String body = text.toString();
         return new Snapshot(DiagnosticStore.create(reportDirectory(context), body), body);
@@ -159,6 +162,7 @@ public final class ImportDiagnostics {
     }
 
     private static void prepare(Activity activity, boolean preview) {
+        if (!PREPARING.compareAndSet(false, true)) return;
         WeakReference<Activity> owner = new WeakReference<>(activity);
         Context context = activity.getApplicationContext();
         Toast.makeText(activity, "Preparing diagnostic report...", Toast.LENGTH_SHORT).show();
@@ -167,19 +171,24 @@ public final class ImportDiagnostics {
                     try {
                         Snapshot snapshot = snapshot(context);
                         Activity current = owner.get();
-                        if (current != null)
+                        if (current != null) {
                             current.runOnUiThread(
                                     () -> {
+                                        PREPARING.set(false);
                                         if (current.isFinishing() || current.isDestroyed()) return;
                                         if (preview) showSnapshot(current, snapshot);
                                         else shareSnapshot(current, snapshot.file);
                                     });
+                        } else {
+                            PREPARING.set(false);
+                        }
                     } catch (IOException | PackageManager.NameNotFoundException error) {
                         Log.e("ImportDiagnostics", "Cannot create report", error);
                         Activity current = owner.get();
-                        if (current != null)
+                        if (current != null) {
                             current.runOnUiThread(
                                     () -> {
+                                        PREPARING.set(false);
                                         if (!current.isFinishing() && !current.isDestroyed())
                                             Toast.makeText(
                                                             current,
@@ -187,6 +196,12 @@ public final class ImportDiagnostics {
                                                             Toast.LENGTH_LONG)
                                                     .show();
                                     });
+                        } else {
+                            PREPARING.set(false);
+                        }
+                    } catch (RuntimeException error) {
+                        PREPARING.set(false);
+                        throw error;
                     }
                 });
     }
@@ -194,13 +209,15 @@ public final class ImportDiagnostics {
     private static void showSnapshot(Activity activity, Snapshot snapshot) {
         android.widget.TextView text = new android.widget.TextView(activity);
         text.setText(snapshot.body);
+        text.setTypeface(Typeface.MONOSPACE);
         text.setTextSize(12);
         text.setTextIsSelectable(true);
         int padding = Math.round(12 * activity.getResources().getDisplayMetrics().density);
         text.setPadding(padding, padding, padding, padding);
         android.widget.ScrollView scroll = new android.widget.ScrollView(activity);
         scroll.addView(text);
-        new android.app.AlertDialog.Builder(activity)
+        new android.app.AlertDialog.Builder(
+                        activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Diagnostic report")
                 .setView(scroll)
                 .setPositiveButton("Close", null)

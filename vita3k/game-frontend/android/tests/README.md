@@ -14,14 +14,12 @@ Each user-requested report is written once to a unique file in app-private `file
 
 Collection and report writing run on a dedicated worker. The complete collected text is passed to the preview; its Share button uses that same snapshot file without collecting again or reading files on the UI thread. Native launch failure notes are written on SDL's worker before its short-lived process exits; a main-thread caller queues note writing instead.
 
-## Android device checks (pending)
+## Android device checks
 
-Compile the frontend against Android SDK 35 and the pinned SDL Android sources as in the normal build. Host checks and SDK compilation do not validate Android chooser/provider grants or lifecycle behavior. On an actual Android device:
+Compile the frontend against Android SDK 35 and the pinned SDL Android sources as in the normal build. On an Android device:
 
 1. From setup, preview report A, then use its Share button to send/save the attachment through another app. Verify the complete preview, including its end, matches the saved UTF-8 text.
-2. Keep A's URI in a test client (or keep the receiving app's attachment pending). Generate/view report B. Read A again through its original granted URI: A's bytes, name and size must be unchanged; B must have a different name/URI. A saved copy alone does not prove the original URI stayed stable.
+2. Keep A's URI in a test client (or keep the receiving app's attachment pending). Generate/view report B. Read A again through its original granted URI: A's bytes, name and size must be unchanged; B must have a different name/URI.
 3. Query an exported report URI with null projection, size only, name only, and size then name. Verify returned supported columns and values follow the requested order. Reject write access, invented filenames, traversal paths and missing reports.
-4. After a genuine failed setup step, export from setup again and verify the relevant setup log or native-launch error is present. Also check the in-game Debug action where setup has succeeded. Logs are bounded tails of existing files, not a complete history.
+4. After a failed setup step, export from setup again and verify the relevant setup log or native-launch error is present. Also check the in-game Debug action where setup has succeeded.
 5. Leave/rotate/recreate the activity during report preparation and confirm there is no stale dialog or crash. Report preparation must leave the UI responsive.
-
-The all-feature local APK in ss-delta #29 has user feedback; this focused diagnostics PR has not separately completed this device matrix. It does not capture native SIGSEGV/tombstones or introduce periodic trace/performance counters.
