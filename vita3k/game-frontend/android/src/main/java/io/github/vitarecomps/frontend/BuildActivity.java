@@ -263,6 +263,8 @@ public class BuildActivity extends Activity {
         actions.addView(addonButton);
         actions.addView(startOverButton);
         column.addView(actions);
+        column.addView(button("View diagnostic report", v -> ImportDiagnostics.show(this)));
+        column.addView(button("Share diagnostic report", v -> ImportDiagnostics.share(this)));
 
         stepView = text("", 18, true);
         stepView.setPadding(0, dp(12), 0, dp(4));

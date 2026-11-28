@@ -189,6 +189,7 @@ std::string format_float(double v) {
 }
 
 std::string shown_value(const SettingsMenu::Row &row) {
+    if (!row.android_action.empty()) return "Open";
     // a choice with labels shows its label (an unset one its example's, as the default)
     if (!row.spec.choice_labels.empty()) {
         const std::string &value = row.value.empty() ? row.spec.value : row.value;
@@ -306,6 +307,16 @@ SettingsMenu::SettingsMenu(const IniLayout &layout, const Values &values, const 
             row.editable = spec.kind != Kind::Path && (spec.kind != Kind::Text || spec.text_entry);
             page.rows.push_back(std::move(row));
         }
+#ifdef __ANDROID__
+        const auto action = [&](const char *key, const char *title, const char *help) {
+            Row row; row.android_action = key; row.spec.key = key; row.spec.title = title;
+            row.spec.help = help; row.spec.live = true; row.editable = true;
+            page.rows.push_back(std::move(row));
+        };
+        if (section.name == "debug") {
+            action("diagnostic", "Share diagnostic report", "Share existing setup/runtime logs with device and application details.");
+        }
+#endif
         // a page with nothing to change from here (paths) stays in the settings file only
         if (std::any_of(page.rows.begin(), page.rows.end(), [](const Row &r) { return r.editable; }))
             m_pages.push_back(std::move(page));
@@ -351,6 +362,7 @@ void SettingsMenu::request_close() {
 }
 
 void SettingsMenu::step(Row &row, int direction) {
+    if (!row.android_action.empty()) { m_changes.push_back({ "android_action", row.android_action, "open" }); return; }
     if (!row.editable || row.exit)
         return;
     const SettingSpec &spec = row.spec;
@@ -864,6 +876,10 @@ void SettingsMenu::on_button_pressed(pad_button button, bool is_auto_repeat) {
         Row *row = nullptr;
         if (!m_pages.empty() && m_row < m_pages[m_page].rows.size())
             row = &m_pages[m_page].rows[m_row];
+        if (row && !row->android_action.empty() && (button == pad_button::cross || button == pad_button::start || button == pad_button::dpad_left || button == pad_button::dpad_right || button == pad_button::ls_left || button == pad_button::ls_right)) {
+            if (!is_auto_repeat && (button == pad_button::cross || button == pad_button::start)) step(*row, 1);
+            goto done;
+        }
         // Exit the game: Cross (or Start) once arms it, a second time exits; any other button disarms.
         // Reset all controls the same way.
         const bool confirm = button == pad_button::cross || button == pad_button::start;

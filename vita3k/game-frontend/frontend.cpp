@@ -99,6 +99,7 @@ void android_set_session(app::AppSessionController *session); // android.cpp
 void android_configure_screen_controls(bool enabled, int size, int opacity, const std::vector<std::pair<float, float>> &spots,
     uint32_t latch_button, const std::string &latch_label);
 void android_settings_menu_open(bool open);
+void android_menu_action(const std::string &action);
 #endif
 
 namespace {
@@ -1119,6 +1120,9 @@ int run(Profile &profile, int argc, char *argv[]) {
     };
 #endif
     const auto apply_change = [&](const SettingsMenu::Change &change) {
+#ifdef __ANDROID__
+        if (change.section == "android_action") { android_menu_action(change.key); return; }
+#endif
         std::string error;
         if (!save_setting(settings_file(ctx.exe_dir, profile.id, ctx.player), change.section, change.key, change.value, error))
             LOG_ERROR("Settings menu: {}", error);

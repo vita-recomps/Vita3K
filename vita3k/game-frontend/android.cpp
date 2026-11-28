@@ -322,6 +322,16 @@ Java_io_github_vitarecomps_frontend_OnScreenControls_toggleMenu(JNIEnv *, jclass
     s_emuenv->ctrl.injected_menu_toggle = true;
 }
 
+namespace game_frontend {
+void android_menu_action(const std::string &action) {
+    call_game_activity("onMenuAction", "(Ljava/lang/String;)V", [&](JNIEnv *env, jobject activity, jmethodID method) {
+        jstring name = env->NewStringUTF(action.c_str());
+        env->CallVoidMethod(activity, method, name);
+        env->DeleteLocalRef(name);
+    });
+}
+}
+
 namespace ime {
 
 void set_sdl_window(SDL_Window *window) {
