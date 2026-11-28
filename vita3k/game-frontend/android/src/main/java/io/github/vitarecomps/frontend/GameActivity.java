@@ -111,7 +111,8 @@ public class GameActivity extends SDLActivity implements InputManager.InputDevic
 
     /** An Android action selected from the native settings menu (game-frontend/android.cpp). */
     public void onMenuAction(String action) {
-        if ("diagnostic".equals(action)) runOnUiThread(() -> ImportDiagnostics.share(this));
+        if ("controls".equals(action)) runOnUiThread(() -> startActivity(new Intent(this, ControlsEditorActivity.class)));
+        else if ("diagnostic".equals(action)) runOnUiThread(() -> ImportDiagnostics.share(this));
     }
 
     /** The frontend settings menu opened or closed. */

@@ -94,5 +94,6 @@
 			android:authorities="${applicationId}.importdiag"
 			android:exported="false"
 			android:grantUriPermissions="true" />
+		<activity android:name="io.github.vitarecomps.frontend.ControlsEditorActivity" android:exported="false" android:screenOrientation="sensorLandscape" />
 	</application>
 </manifest>

@@ -313,6 +313,7 @@ SettingsMenu::SettingsMenu(const IniLayout &layout, const Values &values, const 
             row.spec.help = help; row.spec.live = true; row.editable = true;
             page.rows.push_back(std::move(row));
         };
+        if (section.name == "controls") action("controls", "Edit touch controls", "Edit control geometry and local touch/stick bindings.");
         if (section.name == "debug") {
             action("diagnostic", "Share diagnostic report", "Share existing setup/runtime logs with device and application details.");
         }
