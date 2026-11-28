@@ -80,6 +80,9 @@ struct CtrlState {
     // ss-delta: n > 0 opens only the nth connected gamepad (one copy of the game per player)
     int only_gamepad = 0;
     float analog_multiplier = 1.0f;
+    // Physical gamepad stick sensitivity, under mutex.
+    float left_stick_sensitivity = 1.0f;
+    float right_stick_sensitivity = 1.0f;
     // ss-delta: gamepad inputs a front end adds to controller_binds (under `mutex`)
     std::vector<ExtraGamepadBinding> extra_gamepad_binds;
     // Physical buttons claimed by the single-game frontend, which take priority over implicit PS/L3/R3.

@@ -489,10 +489,12 @@ static void apply_controller(EmuEnvState &emuenv, uint32_t *buttons, float axes[
     }
 
     auto &analog_multiplier = emuenv.cfg.controller_analog_multiplier;
-    axes[0] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[0])), analog_multiplier);
-    axes[1] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[1])), analog_multiplier);
-    axes[2] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[2])), analog_multiplier);
-    axes[3] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[3])), analog_multiplier);
+    const float left_stick_sensitivity = emuenv.ctrl.left_stick_sensitivity;
+    const float right_stick_sensitivity = emuenv.ctrl.right_stick_sensitivity;
+    axes[0] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[0])), analog_multiplier) * left_stick_sensitivity;
+    axes[1] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[1])), analog_multiplier) * left_stick_sensitivity;
+    axes[2] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[2])), analog_multiplier) * right_stick_sensitivity;
+    axes[3] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[3])), analog_multiplier) * right_stick_sensitivity;
 }
 
 static void retrieve_ctrl_data(EmuEnvState &emuenv, int port, bool is_v2, bool negative, bool from_ext_function, SceUInt32 &buttons, SceUInt8 &lx, SceUInt8 &ly, SceUInt8 &rx, SceUInt8 &ry) {

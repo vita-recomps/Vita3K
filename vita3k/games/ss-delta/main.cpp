@@ -221,6 +221,14 @@ game_frontend::IniLayout ini_layout() {
     game.settings.back().title = "PS TV controls";
     game.settings.push_back(language_setting());
     game.settings.push_back(game_frontend::button_labels_setting());
+    game.settings.push_back({ "left_stick_sensitivity", Kind::Float, "1", 0.7, 2.0, {},
+        "How strongly the game responds to the gamepad's left stick. Lower values make movement less responsive.\n"
+        "1 is the default response." });
+    game.settings.back().live = true;
+    game.settings.push_back({ "right_stick_sensitivity", Kind::Float, "1", 0.7, 2.0, {},
+        "How strongly the game responds to the gamepad's right stick. Lower values slow camera turns.\n"
+        "1 is the default response." });
+    game.settings.back().live = true;
     // the Undub patch (Japanese voices, ss-delta docs/01-research.md, "Undub patch") is a rePatch mod
     game.settings.push_back(game_frontend::layout::repatch());
     // [cheats] (GitHub issue #7): switched in the settings menu while the game runs (apply_cheats)

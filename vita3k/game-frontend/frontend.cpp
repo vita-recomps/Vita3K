@@ -851,6 +851,17 @@ int run(Profile &profile, int argc, char *argv[]) {
     }
     if (emuenv.cfg.controller_binds.size() != 15 || emuenv.cfg.controller_axis_binds.size() != 6)
         app::reset_controller_binding(emuenv);
+    constexpr auto left_stick_key = "game.left_stick_sensitivity";
+    constexpr auto right_stick_key = "game.right_stick_sensitivity";
+    const auto apply_stick_sensitivity = [&](const std::string &key, float &stick_sensitivity) {
+        if (!settings.values.values.contains(key))
+            return;
+        const float sensitivity = static_cast<float>(settings.values.get_float(key));
+        std::lock_guard lock(emuenv.ctrl.mutex);
+        stick_sensitivity = sensitivity;
+    };
+    apply_stick_sensitivity(left_stick_key, emuenv.ctrl.left_stick_sensitivity);
+    apply_stick_sensitivity(right_stick_key, emuenv.ctrl.right_stick_sensitivity);
     {
         std::vector<std::string> binding_warnings;
         apply_bindings(emuenv, settings.keyboard, settings.gamepad, binding_warnings);
@@ -1174,6 +1185,10 @@ int run(Profile &profile, int argc, char *argv[]) {
         }
         else if (key == "audio.volume")
             emuenv.audio.set_global_volume(std::clamp(std::atoi(change.value.c_str()), 0, 100) / 100.f);
+        else if (key == left_stick_key)
+            apply_stick_sensitivity(key, emuenv.ctrl.left_stick_sensitivity);
+        else if (key == right_stick_key)
+            apply_stick_sensitivity(key, emuenv.ctrl.right_stick_sensitivity);
         else if (key == "multiplayer.peers" && !net_utils::local_adhoc_player())
             net_utils::set_lan_peers_text(change.value); // the next broadcast goes to them (a game's lan mode)
         else if (change.section == "mouse") {
