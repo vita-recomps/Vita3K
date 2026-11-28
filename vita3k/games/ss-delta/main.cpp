@@ -24,6 +24,7 @@
 #include "allies.h"
 #include "dlc.h"
 #include "saves.h"
+#include "frame_pacing.h"
 
 #include <config/state.h>
 #include <cpu/aot.h>
@@ -163,9 +164,10 @@ game_frontend::IniLayout ini_layout() {
             layout::window_scale(),
             layout::fullscreen(id, exe),
             layout::vsync(),
-            { "frame_rate", Kind::Choice, "60", 0, 0, { "30", "60" },
-                "The game's frame rate: 60, or 30 as on the Vita. The game keeps its speed at 60. Loading\n"
-                "screens run at 30 only with a game built before ss-delta 0.5.0 (build it again)." },
+            { "frame_rate", Kind::Choice, "60", 0, 0, { "24", "30", "40", "45", "60" },
+                "Target frame rate: 24, 30, 40, 45 or 60. Game speed uses measured frame time.\n"
+                "60 is experimental; lower rates were tested by the owner. Cadence depends on device/vblank.\n"
+                "Loading screens fall back to 30 only with a build lacking the loading-race fix." },
             layout::filter(),
             layout::fps_counter(),
             // off: no visible change on the shimmering ST17 ground (the owner, 2026-10-14), so its cause
@@ -174,8 +176,7 @@ game_frontend::IniLayout ini_layout() {
         } };
     // the settings menu changes the frame rate while the game runs: on_tick reads it every tick
     for (auto &spec : display.settings) {
-        if (spec.key == "frame_rate")
-            spec.live = true;
+        if (spec.key == "frame_rate") { spec.live = true; spec.choice_labels = { "24", "30", "40", "45", "60 (experimental)" }; }
         if (spec.key == "full_3d")
             spec.title = "Full-resolution 3D";
     }
@@ -408,6 +409,7 @@ static uint64_t frame_period_us(int fps) {
 
 // Called every frame; returns the rate it set (0: not yet).
 int update_frame_rate(EmuEnvState &emuenv, int fps, int current) {
+    if(!ss_delta::frame_pacing::supported(fps))return -1;
     auto &mem = emuenv.mem;
     const auto u32 = [&](Address a) -> uint32_t * { return is_valid_addr(mem, a) ? Ptr<uint32_t>(a).get(mem) : nullptr; };
     uint32_t *const holder = u32(0x81c957cc);
@@ -430,14 +432,14 @@ int update_frame_rate(EmuEnvState &emuenv, int fps, int current) {
         LOG_INFO("frame_rate: loading screens {}", loading_fixed ? "at the set rate (the recompiled eboot has the fix)" : "at 30 fps (an eboot without the loading-screen fix)");
     }
     const int want = loading && !loading_fixed ? 30 : fps;
-    if (want == current && *period == frame_period_us(want))
+    if (want == current && *period == frame_period_us(want) && *flip == ss_delta::frame_pacing::flip_interval(want))
         return current;
-    if ((*period != frame_period_us(30) && *period != frame_period_us(fps)) || (*flip != 2 && *flip != 60u / fps)) {
+    if (!ss_delta::frame_pacing::known_period(*period) || (*flip != 2 && *flip != 1)) {
         LOG_WARN("frame_rate: unexpected frame timer {} us / flip threshold {}; left alone", *period, *flip);
         return -1;
     }
     *period = frame_period_us(want);
-    *flip = 60 / want;
+    *flip = ss_delta::frame_pacing::flip_interval(want);
     LOG_INFO("frame_rate: {} fps{} (loading state {}, frame timer {} us, flip every {} vblank)", want, want != fps ? " for a loading screen" : "", state, *period, *flip);
     return want;
 }
@@ -1103,7 +1105,7 @@ int main(int argc, char *argv[]) {
     };
     hooks.on_tick = [&](game_frontend::Context &ctx) {
         const int fps = ctx.settings->values.get_int("display.frame_rate");
-        if (fps != 30 && frame_rate != -1)
+        if (ss_delta::frame_pacing::supported(fps) && frame_rate != -1)
             frame_rate = update_frame_rate(*ctx.emuenv, fps, frame_rate);
         if (ctx.settings->values.get_bool("game.skip_intro"))
             intro_skipped = skip_intro_logos(*ctx.emuenv, intro_skipped);
