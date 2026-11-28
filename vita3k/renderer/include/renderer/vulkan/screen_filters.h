@@ -132,6 +132,21 @@ public:
     }
 };
 
+class CASScreenFilter : public SinglePassScreenFilter {
+protected:
+    // contrast adaptive sharpening, custom shader
+    std::string_view get_fragment_name() override;
+    vk::Sampler create_sampler() override;
+
+public:
+    CASScreenFilter(ScreenRenderer &screen)
+        : SinglePassScreenFilter(screen) {}
+
+    std::string_view get_name() override {
+        return "CAS";
+    }
+};
+
 class FSRScreenFilter : public ScreenFilter {
 private:
     // dst of the easu shader, src of the rcas shader

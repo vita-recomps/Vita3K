@@ -578,6 +578,8 @@ void ScreenRenderer::set_filter(const std::string_view &filter) {
         this->filter = std::make_unique<FXAAScreenFilter>(*this);
     else if (filter == "Bicubic")
         this->filter = std::make_unique<BicubicScreenFilter>(*this);
+    else if (filter == "CAS")
+        this->filter = std::make_unique<CASScreenFilter>(*this);
     else if (filter == "Nearest")
         this->filter = std::make_unique<NearestScreenFilter>(*this);
     else
