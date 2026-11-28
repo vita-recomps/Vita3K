@@ -269,6 +269,8 @@ int run(EmuEnvState &emuenv, app::AppSessionController &session, AppLaunchReques
             cleanup_launch(app::AppSessionStopReason::LaunchFailure);
             break;
         }
+        if (hooks.on_renderer)
+            hooks.on_renderer();
 
         if (!session.initialize_runtime()) {
             LOG_ERROR("Failed late initialisation.");

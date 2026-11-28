@@ -695,27 +695,16 @@ void TextureCache::invalidate_all_textures() {
     }
 }
 
-void TextureCache::apply_replacement_refresh() {
-    {
-        std::lock_guard<std::mutex> guard(replacement_folders_mutex);
-        if (pending_replacement_folders) {
-            import_folder = pending_replacement_folders->first;
-            export_folder = pending_replacement_folders->second;
-            pending_replacement_folders.reset();
-        }
-    }
-    refresh_available_textures();
-    invalidate_all_textures();
-}
-
 void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemState &mem) {
     R_PROFILE(__func__);
 
     // the TextureOverride changed its pictures: upload everything again
     if (texture_override_changed.exchange(false))
         invalidate_all_textures();
-    if (replacement_refresh.exchange(false))
-        apply_replacement_refresh();
+    if (replacement_refresh.exchange(false)) {
+        refresh_available_textures();
+        invalidate_all_textures();
+    }
 
     size_t index = 0;
     bool configure = false;

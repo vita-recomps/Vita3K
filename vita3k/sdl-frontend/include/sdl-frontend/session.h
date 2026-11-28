@@ -40,6 +40,9 @@ struct Hooks {
     std::function<void(SDL_Window *window)> on_window;
     // The app was found and starts booting
     std::function<void(const std::string &app_path)> on_launch;
+    // The renderer was created, its late initialisation (the texture cache) not done yet, nothing
+    // drawn: for renderer settings that must hold from the first draw. On every launch
+    std::function<void()> on_renderer;
     // The gamepad's guide button was pressed
     std::function<void()> on_guide_button;
     // The text or state of the active IME changed

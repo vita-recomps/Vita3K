@@ -1239,6 +1239,20 @@ int run(Profile &profile, int argc, char *argv[]) {
 
     auto last_title = std::chrono::steady_clock::now();
     sdl_frontend::Hooks hooks;
+    // texture replacement ([display] custom_textures, [debug] export_textures): <id>/textures/
+    // import|export/<title ID>/, player 1's folder for every player. Set on each new renderer before
+    // its late_init starts the texture cache, so the first draw already uses them (the renderer's
+    // default is the player's own folder, and the app path it would add is empty then)
+    hooks.on_renderer = [&] {
+        const auto &cc = emuenv.cfg.current_config;
+        if (!emuenv.renderer || !(cc.import_textures || cc.export_textures))
+            return;
+        emuenv.renderer->texture_replacement_folder = ctx.exe_dir / profile.id / "textures";
+        emuenv.renderer->texture_replacement_game_id = profile.title_id;
+        LOG_INFO("Texture replacement: import {} from {}, export {}", cc.import_textures ? "on" : "off",
+            fs_utils::path_to_utf8(emuenv.renderer->texture_replacement_folder / "import" / profile.title_id),
+            cc.export_textures ? settings.export_textures : "off");
+    };
     hooks.on_window = [&](SDL_Window *w) {
         window = w;
         if (!window)
@@ -1572,17 +1586,6 @@ int run(Profile &profile, int argc, char *argv[]) {
             // [debug] surface_sync: which scenes wait for the GPU
             emuenv.renderer->surface_sync_wait = settings.surface_sync < 3 ? settings.surface_sync : 0;
             LOG_INFO("surface sync: {}", std::array<const char *, 4>{ "exact", "targeted", "latent", "off" }[settings.surface_sync]);
-            // texture replacement: <id>/textures/import|export/<title ID>/, player 1's folder for
-            // every player (the renderer's own default is the player's data folder, without the ID)
-            const auto &cc = emuenv.cfg.current_config;
-            if (cc.import_textures || cc.export_textures) {
-                if (renderer::TextureCache *cache = emuenv.renderer->get_texture_cache()) {
-                    const fs::path textures = ctx.exe_dir / profile.id / "textures";
-                    cache->set_replacement_folders(textures / "import" / profile.title_id, textures / "export" / profile.title_id);
-                    LOG_INFO("Texture replacement: import {} from {}, export {}", cc.import_textures ? "on" : "off",
-                        fs_utils::path_to_utf8(textures / "import" / profile.title_id), cc.export_textures ? settings.export_textures : "off");
-                }
-            }
         }
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
             // --dump-elfs: the modules the game loaded so far are written; then quit

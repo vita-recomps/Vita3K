@@ -249,8 +249,17 @@ struct State {
 
     virtual ~State() = default;
 
+    // where texture replacement imports from and exports to: <folder>/import|export/<game ID>/. A
+    // front end may set both after the renderer is created and before its late_init, which starts the
+    // texture cache (empty: the shared path's textures/ and the app's path)
+    fs::path texture_replacement_folder;
+    std::string texture_replacement_game_id;
+
     fs::path texture_folder() const {
-        return shared_path / "textures";
+        return texture_replacement_folder.empty() ? shared_path / "textures" : texture_replacement_folder;
+    }
+    std::string_view texture_game_id(std::string_view app_game_id) const {
+        return texture_replacement_game_id.empty() ? app_game_id : std::string_view(texture_replacement_game_id);
     }
 
     void init_paths(const Root &root_paths) {

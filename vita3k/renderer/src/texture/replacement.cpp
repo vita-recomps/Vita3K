@@ -24,6 +24,7 @@
 #include "util/log.h"
 
 #include <ddspp.h>
+#include <algorithm>
 #include <fmt/format.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -437,6 +438,47 @@ void TextureCache::export_done() {
     exporting_texture = false;
 }
 
+// Whether a DDS holds every texel the upload reads: for each face, the mip chain as
+// ddspp::get_offset lays it out (ddspp only decodes the header). Sizes are counted in 64 bits:
+// get_offset multiplies in 32, so a mip must also stay below 2^32 bits.
+static bool dds_payload_fits(const ddspp::Descriptor &desc, uint32_t faces, size_t file_size, const std::string &file_name) {
+    constexpr uint32_t max_side = 16384;
+    if (desc.width == 0 || desc.height == 0 || desc.width > max_side || desc.height > max_side) {
+        LOG_ERROR("Texture {}: {}x{} is outside 1-{}", file_name, desc.width, desc.height, max_side);
+        return false;
+    }
+    if (desc.type == ddspp::Texture3D || desc.blockWidth == 0 || desc.blockHeight == 0 || desc.bitsPerPixelOrBlock == 0) {
+        LOG_ERROR("Texture {}: unsupported layout (type {}, block {}x{}, {} bits)", file_name, fmt::underlying(desc.type),
+            desc.blockWidth, desc.blockHeight, desc.bitsPerPixelOrBlock);
+        return false;
+    }
+    uint32_t max_mips = 1;
+    for (uint32_t side = std::max(desc.width, desc.height); side > 1; side >>= 1)
+        max_mips++;
+    if (desc.numMips == 0 || desc.numMips > max_mips) {
+        LOG_ERROR("Texture {}: {} mips for {}x{} (at most {})", file_name, desc.numMips, desc.width, desc.height, max_mips);
+        return false;
+    }
+    uint64_t chain_bits = 0;
+    for (uint32_t mip = 0; mip < desc.numMips; mip++) {
+        const uint64_t mip_width = std::max<uint64_t>(desc.width >> mip, 1);
+        const uint64_t mip_height = std::max<uint64_t>(desc.height >> mip, 1);
+        const uint64_t mip_bits = ((mip_width + desc.blockWidth - 1) / desc.blockWidth) * ((mip_height + desc.blockHeight - 1) / desc.blockHeight) * desc.bitsPerPixelOrBlock;
+        if (mip_bits >= (uint64_t{ 1 } << 32)) {
+            LOG_ERROR("Texture {}: mip {} is too large", file_name, mip);
+            return false;
+        }
+        chain_bits += mip_bits;
+    }
+    const uint64_t needed = desc.headerSize + (chain_bits * faces + 7) / 8;
+    if (needed > file_size) {
+        LOG_ERROR("Texture {} is truncated: {} bytes, {} needed for {}x{}, {} mips, {} faces", file_name, file_size, needed,
+            desc.width, desc.height, desc.numMips, faces);
+        return false;
+    }
+    return true;
+}
+
 bool TextureCache::import_configure_texture() {
     if (loading_texture.in_memory) {
         // the TextureOverride's picture, RGBA8
@@ -482,6 +524,8 @@ bool TextureCache::import_configure_texture() {
             LOG_ERROR("Failed to read {}", file_name);
             return false;
         }
+        // before the padding below, for the payload check
+        const size_t file_size = imported_texture_raw_data.size();
         if (imported_texture_raw_data.size() < ddspp::MAX_HEADER_SIZE) {
             imported_texture_raw_data.resize(ddspp::MAX_HEADER_SIZE);
         }
@@ -521,6 +565,13 @@ bool TextureCache::import_configure_texture() {
             // this issue is most likely to happen on android
             SDL_ShowAndroidToast("BCn textures are not supported by this device!", 1, -1, 0, 0);
 #endif
+            return false;
+        }
+
+        // a truncated or inconsistent file would make the upload read past its end: the game's own
+        // texture is drawn instead, and the file isn't tried again until the folder is read again
+        if (!dds_payload_fits(*dds_descriptor, is_cube ? 6 : 1, file_size, file_name)) {
+            available_textures_hash.erase(hash);
             return false;
         }
 
@@ -642,45 +693,55 @@ void TextureCache::refresh_available_textures() {
         }
     };
 
-    exported_textures_hash.clear();
-    if (export_textures) {
-        look_through_folder(export_folder, [&](uint64_t hash, const fs::path &file, bool is_dds) {
-            // for exported textures, do not look in subfolders
-            if (file.parent_path() != export_folder)
-                return;
+    // the new lists are built aside and replace the current ones only once both folders were read:
+    // this can run on the render thread (a front end's reload), where a folder that can't be read
+    // (removed meanwhile, no permission) must not end the game
+    decltype(exported_textures_hash) exported;
+    decltype(available_textures_hash) available;
+    try {
+        if (export_textures) {
+            look_through_folder(export_folder, [&](uint64_t hash, const fs::path &file, bool is_dds) {
+                // for exported textures, do not look in subfolders
+                if (file.parent_path() != export_folder)
+                    return;
 
-            if (save_as_png == !is_dds)
-                exported_textures_hash.insert(hash);
-        });
+                if (save_as_png == !is_dds)
+                    exported.insert(hash);
+            });
+        }
 
-        if (!exported_textures_hash.empty())
-            LOG_INFO("Found {} textures already exported", exported_textures_hash.size());
+        if (import_textures) {
+            // to reduce memory, reuse the same path for multiple textures in the same folder
+            std::map<fs::path, std::shared_ptr<fs::path>> found_folders;
+
+            look_through_folder(import_folder, [&](uint64_t hash, const fs::path &file, bool is_dds) {
+                // prioritize dds files
+                if (is_dds || available.find(hash) == available.end()) {
+                    const fs::path parent = file.parent_path();
+                    auto it = found_folders.find(parent);
+
+                    if (it == found_folders.end())
+                        it = found_folders.emplace(parent, std::make_shared<fs::path>(parent)).first;
+
+                    available[hash] = {
+                        is_dds,
+                        it->second
+                    };
+                }
+            });
+        }
+    } catch (const std::exception &e) {
+        LOG_ERROR("Texture replacement: could not read {} or {} ({}); the current list of {} textures is kept",
+            fs_utils::path_to_utf8(import_folder), fs_utils::path_to_utf8(export_folder), e.what(), available_textures_hash.size());
+        return;
     }
 
-    available_textures_hash.clear();
-    if (import_textures) {
-        // to reduce memory, reuse the same path for multiple textures in the same folder
-        std::map<fs::path, std::shared_ptr<fs::path>> found_folders;
-
-        look_through_folder(import_folder, [&](uint64_t hash, const fs::path &file, bool is_dds) {
-            // prioritize dds files
-            if (is_dds || available_textures_hash.find(hash) == available_textures_hash.end()) {
-                const fs::path parent = file.parent_path();
-                auto it = found_folders.find(parent);
-
-                if (it == found_folders.end())
-                    it = found_folders.emplace(parent, std::make_shared<fs::path>(parent)).first;
-
-                available_textures_hash[hash] = {
-                    is_dds,
-                    it->second
-                };
-            }
-        });
-
-        if (!available_textures_hash.empty())
-            LOG_INFO("Found {} textures ready to be imported", available_textures_hash.size());
-    }
+    exported_textures_hash = std::move(exported);
+    available_textures_hash = std::move(available);
+    if (!exported_textures_hash.empty())
+        LOG_INFO("Found {} textures already exported", exported_textures_hash.size());
+    if (!available_textures_hash.empty())
+        LOG_INFO("Found {} textures ready to be imported", available_textures_hash.size());
 }
 
 static SceGxmTextureBaseFormat dxgi_to_gxm(const ddspp::DXGIFormat format) {
