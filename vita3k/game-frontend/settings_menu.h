@@ -117,6 +117,8 @@ private:
     bool m_reset_armed = false;
     ::overlay::pad_button m_swallowed = ::overlay::pad_button::pad_button_max_enum; // its repeats are ignored too
     std::string m_note; // what the last binding did (a swap), under the help
+    std::vector<std::string> m_mouse_capture_keys;
+    bool m_mouse_camera_enabled = false;
 
     void step(Row &row, int direction);
     void binding_button(Row &row, ::overlay::pad_button button);

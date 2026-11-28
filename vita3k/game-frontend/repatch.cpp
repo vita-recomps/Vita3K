@@ -202,6 +202,7 @@ std::optional<bool> install_repatch(const fs::path &vita_fs, const fs::path &pat
 bool holds_game_content(const fs::path &path) {
     static const std::regex content("(?:^|.*/)(?:app|patch|addcont)/[A-Z]{4}[0-9]{5}/.*",
         std::regex::icase);
+    static const std::regex standalone("(?:^|.*/)[A-Z]{4}[0-9]{5}/sce_sys/param\\.sfo", std::regex::icase);
     if (fs::is_directory(path)) {
         boost::system::error_code ec;
         for (fs::recursive_directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec)) {
@@ -210,7 +211,14 @@ bool holds_game_content(const fs::path &path) {
                 continue;
             }
             const std::string name = string_utils::tolower(fs_utils::path_to_utf8(it->path().filename()));
+            if (fs::is_directory(it->path()) && name == "repatch") {
+                it.disable_recursion_pending();
+                continue;
+            }
             if (fs::is_directory(it->path()) && (name == "app" || name == "patch" || name == "addcont"))
+                return true;
+            if (is_title_id(fs_utils::path_to_utf8(it->path().filename()))
+                && fs::is_regular_file(it->path() / "sce_sys" / "param.sfo"))
                 return true;
         }
         return false;
@@ -229,7 +237,9 @@ bool holds_game_content(const fs::path &path) {
                 continue;
             std::string name = stat.m_filename;
             string_utils::replace(name, "\\", "/");
-            found = std::regex_match(name, content);
+            if (string_utils::tolower('/' + name).contains("/repatch/"))
+                continue;
+            found = std::regex_match(name, standalone) || std::regex_match(name, content);
         }
         mz_zip_reader_end(&zip);
     }

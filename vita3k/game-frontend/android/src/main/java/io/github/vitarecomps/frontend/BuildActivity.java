@@ -203,7 +203,7 @@ public class BuildActivity extends Activity {
               + "game's last update after it if the dump lacks it (its .pkg), and add-ons (DLC) the same way, or a "
               + "rePatch mod (a .zip with its rePatch folder); add-ons and mods can also be added later, from the "
               + "app icon's long-press menu. The PS Vita firmware comes from Sony's "
-              + "servers (190 MB), or from its files if you have them (version 3.74's PSVUPDAT.PUP and PSP2UPDAT.PUP: "
+              + "servers (about 180 MB), or from its files if you have them (version 3.74's PSVUPDAT.PUP and PSP2UPDAT.PUP: "
               + "Add firmware files).\n\n"
               + "Building takes about " + buildMinutes() + " minutes on a fast device and needs about 10 GB of free space (5 GB of it "
               + "only while building). Keep the device charging. Nothing leaves the device.", 15, false);
@@ -480,7 +480,7 @@ public class BuildActivity extends Activity {
     /**
      * Reads each file picked (through the picker's grant, as the dump is read), hashing it as it is copied,
      * and keeps it under its firmware name when its size and SHA-256 are one of FIRMWARE_FILES'. On a
-     * thread of its own: 190 MB take a few seconds.
+     * thread of its own: the two files take a few seconds.
      */
     private void importFirmware(List<Uri> uris) {
         File dir = firmwareDir();
@@ -806,6 +806,9 @@ public class BuildActivity extends Activity {
     }
 
     private void frontend(String[] args) {
+        File error = stepErrorFile();
+        if (error.exists() && !error.delete())
+            Log.w(TAG, "can't clear " + error);
         BuildService.append(this, "$ front end " + String.join(" ", args));
         waitingForStep = true;
         startActivityForResult(new Intent(this, FrontendStepActivity.class).putExtra("args", args), REQUEST_STEP);
@@ -844,7 +847,7 @@ public class BuildActivity extends Activity {
 
     /** The front end's step-error.txt (a line per part that failed), or "" when it left none. */
     private String stepError() {
-        File file = new File(new File(gameDir(this), game().optString("id")), "step-error.txt");
+        File file = stepErrorFile();
         if (!file.isFile())
             return "";
         try (InputStream in = new FileInputStream(file)) {
@@ -853,6 +856,10 @@ public class BuildActivity extends Activity {
             Log.w(TAG, "can't read " + file, e);
             return "";
         }
+    }
+
+    private File stepErrorFile() {
+        return new File(new File(gameDir(this), game().optString("id")), "step-error.txt");
     }
 
     private static byte[] readAll(InputStream in) throws java.io.IOException {

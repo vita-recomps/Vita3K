@@ -237,7 +237,7 @@ void AppSessionController::apply_runtime_state_locked() {
     }
 
     if (emuenv.audio.adapter)
-        emuenv.audio.switch_state(paused);
+        emuenv.audio.set_pause_state(paused, freeze);
 
     emuenv.drop_inputs = paused;
 

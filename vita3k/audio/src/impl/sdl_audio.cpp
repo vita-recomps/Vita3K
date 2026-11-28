@@ -80,6 +80,7 @@ bool SDLAudioAdapter::init() {
             device_id = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, nullptr);
     }
     SDL_CHECK_EXT(device_id > 0, false);
+    switch_state(false);
     return true;
 }
 
@@ -105,7 +106,6 @@ AudioOutPortPtr SDLAudioAdapter::open_port(int nb_channels, int freq, int nb_sam
     port->channels = nb_channels;
     port->len_microseconds = (nb_sample * 1'000'000ULL) / freq;
     port->len_bytes = nb_sample * nb_channels * sizeof(int16_t);
-    switch_state(false);
     return port;
 }
 

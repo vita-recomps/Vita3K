@@ -380,32 +380,62 @@ void apply_bindings(EmuEnvState &emuenv, const std::map<std::string, std::string
         { "left", { SDL_GAMEPAD_BUTTON_DPAD_LEFT, SCE_CTRL_LEFT, SCE_CTRL_LEFT } },
         { "right", { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, SCE_CTRL_RIGHT, SCE_CTRL_RIGHT } },
     };
-    for (const auto &[name, value] : gamepad) {
-        const auto it = slots.find(name);
-        if (it == slots.end()) {
-            warnings.push_back("gamepad." + name + " (no such Vita button)");
-            continue;
-        }
-        const Slot &slot = it->second;
-        const auto list = split_list(value);
-        const auto inputs = parse_gamepad_inputs(list, "gamepad." + name, warnings);
-        if (inputs.empty() && !list.empty())
-            continue; // nothing usable: keep the binding rather than unbind the button
-        // the first button stays Vita3K's; everything else (an empty list: nothing) is extra
-        int first = SDL_GAMEPAD_BUTTON_INVALID;
-        std::vector<ExtraGamepadBinding> extra;
-        for (const auto &input : inputs) {
-            if (input.button >= 0 && first == SDL_GAMEPAD_BUTTON_INVALID)
-                first = input.button;
-            else
-                extra.push_back({ input.button, input.axis, slot.vita_button, slot.vita_button_ext });
-        }
-        if (static_cast<size_t>(slot.slot) < cfg.controller_binds.size())
-            cfg.controller_binds[slot.slot] = static_cast<short>(first);
-        const std::lock_guard<std::mutex> lock(emuenv.ctrl.mutex);
+    if (gamepad.empty())
+        return;
+    {
+        const std::lock_guard lock(emuenv.ctrl.mutex);
         auto &binds = emuenv.ctrl.extra_gamepad_binds;
-        std::erase_if(binds, [&](const ExtraGamepadBinding &b) { return b.vita_button == slot.vita_button && b.vita_button_ext == slot.vita_button_ext; });
-        binds.insert(binds.end(), extra.begin(), extra.end());
+        for (const auto &[name, value] : gamepad) {
+            const auto it = slots.find(name);
+            if (it == slots.end()) {
+                warnings.push_back("gamepad." + name + " (no such Vita button)");
+                continue;
+            }
+            const Slot &slot = it->second;
+            const auto list = split_list(value);
+            const auto inputs = parse_gamepad_inputs(list, "gamepad." + name, warnings);
+            if (inputs.empty() && !list.empty())
+                continue; // nothing usable: keep the binding rather than unbind the button
+            // the first button stays Vita3K's; everything else (an empty list: nothing) is extra
+            int first = SDL_GAMEPAD_BUTTON_INVALID;
+            std::vector<ExtraGamepadBinding> extra;
+            for (const auto &input : inputs) {
+                if (input.button >= 0 && first == SDL_GAMEPAD_BUTTON_INVALID)
+                    first = input.button;
+                else
+                    extra.push_back({ input.button, input.axis, slot.vita_button, slot.vita_button_ext });
+            }
+            if (static_cast<size_t>(slot.slot) < cfg.controller_binds.size())
+                cfg.controller_binds[slot.slot] = static_cast<short>(first);
+            std::erase_if(binds, [&](const ExtraGamepadBinding &b) { return b.vita_button == slot.vita_button && b.vita_button_ext == slot.vita_button_ext; });
+            binds.insert(binds.end(), extra.begin(), extra.end());
+        }
+    }
+    sync_claimed_gamepad_buttons(emuenv);
+}
+
+void sync_claimed_gamepad_buttons(EmuEnvState &emuenv, const std::vector<short> &touch_buttons) {
+    static constexpr SDL_GamepadButton managed_slots[] = {
+        SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_WEST, SDL_GAMEPAD_BUTTON_NORTH,
+        SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+        SDL_GAMEPAD_BUTTON_START, SDL_GAMEPAD_BUTTON_BACK,
+        SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN, SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+    };
+    const std::lock_guard lock(emuenv.ctrl.mutex);
+    auto &claimed = emuenv.ctrl.claimed_gamepad_buttons;
+    claimed.clear();
+    const auto &binds = emuenv.cfg.controller_binds;
+    for (const SDL_GamepadButton slot : managed_slots) {
+        if (static_cast<size_t>(slot) < binds.size() && binds[slot] >= 0)
+            claimed.push_back(binds[slot]);
+    }
+    for (const auto &extra : emuenv.ctrl.extra_gamepad_binds) {
+        if (extra.button >= 0)
+            claimed.push_back(static_cast<short>(extra.button));
+    }
+    for (const short button : touch_buttons) {
+        if (button >= 0)
+            claimed.push_back(button);
     }
 }
 
@@ -680,6 +710,15 @@ void Touches::configure(const std::vector<TouchBinding> &touches, std::vector<st
         }
         bindings.push_back(std::move(b));
     }
+}
+
+std::vector<short> Touches::claimed_gamepad_buttons() const {
+    std::vector<short> buttons;
+    for (const auto &b : bindings)
+        for (const int button : b.gamepad_buttons)
+            if (button >= 0)
+                buttons.push_back(static_cast<short>(button));
+    return buttons;
 }
 
 void Touches::update(EmuEnvState &emuenv, const Keyboard &keyboard) {

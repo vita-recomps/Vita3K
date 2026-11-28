@@ -391,6 +391,15 @@ static void apply_keyboard(uint32_t *buttons, float axes[4], bool ext, EmuEnvSta
     axes[3] += kb.axes[3];
 }
 
+// The caller holds ctrl.mutex, as for the ordinary and alternate bindings.
+static SDL_GamepadButton implicit_controller_button(const EmuEnvState &emuenv, SDL_GamepadButton slot) {
+    const short button = emuenv.cfg.controller_binds[slot];
+    const auto &claimed = emuenv.ctrl.claimed_gamepad_buttons;
+    return std::find(claimed.begin(), claimed.end(), button) == claimed.end()
+        ? static_cast<SDL_GamepadButton>(button)
+        : SDL_GAMEPAD_BUTTON_INVALID;
+}
+
 static std::array<ControllerBinding, 13> get_controller_bindings(EmuEnvState &emuenv) {
     return { {
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_BACK]), SCE_CTRL_SELECT },
@@ -405,15 +414,15 @@ static std::array<ControllerBinding, 13> get_controller_bindings(EmuEnvState &em
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_EAST]), SCE_CTRL_CIRCLE },
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_SOUTH]), SCE_CTRL_CROSS },
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_WEST]), SCE_CTRL_SQUARE },
-        { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_GUIDE]), SCE_CTRL_PSBUTTON },
+        { implicit_controller_button(emuenv, SDL_GAMEPAD_BUTTON_GUIDE), SCE_CTRL_PSBUTTON },
     } };
 }
 
 std::array<ControllerBinding, 15> get_controller_bindings_ext(EmuEnvState &emuenv) {
     return { {
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_BACK]), SCE_CTRL_SELECT },
-        { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_LEFT_STICK]), SCE_CTRL_L3 },
-        { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_RIGHT_STICK]), SCE_CTRL_R3 },
+        { implicit_controller_button(emuenv, SDL_GAMEPAD_BUTTON_LEFT_STICK), SCE_CTRL_L3 },
+        { implicit_controller_button(emuenv, SDL_GAMEPAD_BUTTON_RIGHT_STICK), SCE_CTRL_R3 },
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_START]), SCE_CTRL_START },
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_DPAD_UP]), SCE_CTRL_UP },
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]), SCE_CTRL_RIGHT },
@@ -425,7 +434,7 @@ std::array<ControllerBinding, 15> get_controller_bindings_ext(EmuEnvState &emuen
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_EAST]), SCE_CTRL_CIRCLE },
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_SOUTH]), SCE_CTRL_CROSS },
         { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_WEST]), SCE_CTRL_SQUARE },
-        { static_cast<SDL_GamepadButton>(emuenv.cfg.controller_binds[SDL_GAMEPAD_BUTTON_GUIDE]), SCE_CTRL_PSBUTTON },
+        { implicit_controller_button(emuenv, SDL_GAMEPAD_BUTTON_GUIDE), SCE_CTRL_PSBUTTON },
     } };
 }
 

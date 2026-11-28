@@ -217,6 +217,8 @@ SettingsMenu::SettingsMenu(const IniLayout &layout, const Values &values, const 
     visible = true;
     m_allow_input_on_pause = true;
     m_column = FIRST_COLUMN;
+    m_mouse_camera_enabled = values.values.contains("mouse.camera") && values.get_bool("mouse.camera");
+    m_mouse_capture_keys = binding_keys(values.get("mouse.capture_key"), "");
     const bool has_gamepad = std::any_of(layout.sections.begin(), layout.sections.end(), [](const IniSection &s) { return s.name == "gamepad"; });
     for (const auto &section : layout.sections) {
         if (section.name == "keyboard" && has_gamepad) {
@@ -397,6 +399,8 @@ void SettingsMenu::step(Row &row, int direction) {
     if (next == row.value)
         return;
     row.value = next;
+    if (row.section == "mouse" && spec.key == "camera")
+        m_mouse_camera_enabled = next == "true";
     if (!spec.live)
         row.needs_restart = true;
     m_changes.push_back({ row.section, spec.key, next });
@@ -639,6 +643,9 @@ void SettingsMenu::assign_key(Row &row, size_t column, const std::string &key) {
     else
         keys.push_back(key);
     set_keys(row, keys);
+    if (m_note.empty() && m_mouse_camera_enabled
+        && std::any_of(m_mouse_capture_keys.begin(), m_mouse_capture_keys.end(), [&](const auto &capture) { return same(key, capture); }))
+        m_note = key + " now has a game binding. Middle-click can still capture the cursor.";
 }
 
 // A gamepad button or trigger into one of a row's two gamepad cells (slot 0, 1), as assign_key does it
@@ -803,7 +810,7 @@ void SettingsMenu::bind_mouse(int sdl_button) {
             return;
         end_listen();
         assign_key(*row, m_column, key_name(mouse_button_code(sdl_button)));
-        if (sdl_button == SDL_BUTTON_LEFT || sdl_button == SDL_BUTTON_RIGHT)
+        if (m_note.empty() && (sdl_button == SDL_BUTTON_LEFT || sdl_button == SDL_BUTTON_RIGHT))
             m_note = key_name(mouse_button_code(sdl_button)) + " presses it while the mouse camera has the cursor (otherwise it touches the screen).";
     }
     refresh();
@@ -1141,9 +1148,9 @@ done:
                                               : "Up/Down: choose    Left/Right, Cross: change    L1/R1: page    Circle: close";
 #else
     const std::string menu_hints = on_binding
-        ? fmt::format("Left/Right: column    Cross: change    Square: clear    Triangle: default    L1/R1 ({}/{}): page    Circle ({}), F1: close",
+        ? fmt::format("Left/Right: column    Cross/Enter: change    Square: clear    Triangle: default    L1/R1 ({}/{}): page    Circle ({}), F1: close",
               bound("l", "Q"), bound("r", "E"), bound("circle", "C"))
-        : fmt::format("Up/Down: choose    Left/Right, Cross: change    L1/R1 ({}/{}): page    Circle ({}), Esc, F1: close",
+        : fmt::format("Up/Down: choose    Left/Right, Cross/Enter: change    L1/R1 ({}/{}): page    Circle ({}), Esc, F1: close",
               bound("l", "Q"), bound("r", "E"), bound("circle", "C"));
 #endif
     const std::string hints = m_text_editing.load()

@@ -82,6 +82,8 @@ struct CtrlState {
     float analog_multiplier = 1.0f;
     // ss-delta: gamepad inputs a front end adds to controller_binds (under `mutex`)
     std::vector<ExtraGamepadBinding> extra_gamepad_binds;
+    // Physical buttons claimed by the single-game frontend, which take priority over implicit PS/L3/R3.
+    std::vector<short> claimed_gamepad_buttons;
     bool has_motion_support = false;
     bool free_ports[SCE_CTRL_MAX_WIRELESS_NUM] = { true, true, true, true };
     SceCtrlPadInputMode input_mode = SCE_CTRL_MODE_DIGITAL;

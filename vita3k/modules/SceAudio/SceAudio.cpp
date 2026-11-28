@@ -181,11 +181,7 @@ EXPORT(int, sceAudioOutOpenPort, SceAudioOutPortType type, int len, int freq, Sc
     port->freq = freq;
     port->mode = mode;
 
-    const std::lock_guard<std::mutex> lock(emuenv.audio.mutex);
-    const int port_id = emuenv.audio.next_port_id++;
-    emuenv.audio.out_ports.emplace(port_id, port);
-
-    return port_id;
+    return emuenv.audio.register_port(port);
 }
 
 EXPORT(int, sceAudioOutOutput, int port, const void *buf) {
@@ -303,8 +299,7 @@ EXPORT(int, sceAudioOutSetConfig, int port, int len, int freq, int mode) {
     prt->len = set_len;
     prt->mode = set_mode;
 
-    const std::lock_guard<std::mutex> lock(emuenv.audio.mutex);
-    emuenv.audio.out_ports.emplace(port, prt);
+    emuenv.audio.register_port(prt, port);
 
     return 0;
 }

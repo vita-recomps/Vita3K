@@ -438,6 +438,10 @@ static std::vector<std::string> get_archive_contents_path(const ZipPtr &zip) {
             continue;
 
         std::string m_filename = std::string(file_stat.m_filename);
+        std::string normalized = m_filename;
+        string_utils::replace(normalized, "\\", "/");
+        if (string_utils::tolower('/' + normalized).contains("/repatch/"))
+            continue;
         if (m_filename.contains("sce_module/steroid.suprx")) {
             LOG_CRITICAL("A Vitamin dump was detected, aborting installation...");
 #ifdef __ANDROID__
@@ -521,11 +525,15 @@ std::vector<ContentInfo> install_archive(EmuEnvState &emuenv, const fs::path &ar
 static std::vector<fs::path> get_contents_path(const fs::path &path) {
     std::vector<fs::path> contents_path;
 
-    for (const auto &p : fs::recursive_directory_iterator(path)) {
-        auto filename = p.path().filename();
+    for (fs::recursive_directory_iterator it(path), end; it != end; ++it) {
+        auto filename = it->path().filename();
+        if (fs::is_directory(it->path()) && string_utils::tolower(fs_utils::path_to_utf8(filename)) == "repatch") {
+            it.disable_recursion_pending();
+            continue;
+        }
         const auto is_content = (filename == "param.sfo") || (filename == "theme.xml");
         if (is_content) {
-            auto parent_path = p.path().parent_path();
+            auto parent_path = it->path().parent_path();
             const auto content_path = (filename == "param.sfo") ? parent_path.parent_path() : parent_path;
             vector_utils::push_if_not_exists(contents_path, content_path);
         }

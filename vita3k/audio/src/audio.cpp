@@ -96,14 +96,7 @@ bool AudioState::init(const std::string &adapter_name) {
 }
 
 void AudioState::stop_all_ports() {
-    {
-        const std::lock_guard<std::mutex> lock(mutex);
-        for (auto &[_, port] : out_ports) {
-            port->stopping = true;
-        }
-    }
-    if (adapter)
-        adapter->wake_all_ports();
+    wake_all_ports();
 }
 
 void AudioState::deinit() {
@@ -112,6 +105,10 @@ void AudioState::deinit() {
     const std::lock_guard<std::mutex> lock(mutex);
 
     out_ports.clear();
+    muted = false;
+    if (suspended && adapter)
+        adapter->switch_state(false);
+    suspended = false;
 
     if (in_port.running) {
         SDL_DestroyAudioStream(static_cast<SDL_AudioStream *>(in_port.id));
@@ -147,12 +144,21 @@ void AudioState::set_backend(const std::string &adapter_name) {
         adapter = std::make_unique<SilentAudioAdapter>(*this);
         adapter->init();
     }
+    if (suspended)
+        adapter->switch_state(true);
 }
 
 AudioOutPortPtr AudioState::open_port(int nb_channels, int freq, int nb_sample) {
-    AudioOutPortPtr port = adapter->open_port(nb_channels, freq, nb_sample);
-    set_volume(*port, port->volume);
-    return port;
+    return adapter->open_port(nb_channels, freq, nb_sample);
+}
+
+int AudioState::register_port(const AudioOutPortPtr &port, int id) {
+    const std::lock_guard lock(mutex);
+    apply_volume(*port);
+    if (id == 0)
+        id = next_port_id++;
+    out_ports.emplace(id, port);
+    return id;
 }
 
 // Loudness log for sound tests on devices whose output can't be recorded (a phone): each output
@@ -225,21 +231,34 @@ void AudioState::audio_output(AudioOutPort &out_port, const void *buffer) {
 }
 
 void AudioState::set_volume(AudioOutPort &out_port, float volume) {
+    const std::lock_guard lock(mutex);
     out_port.volume = volume;
-    adapter->set_volume(out_port, volume * global_volume);
+    apply_volume(out_port);
+}
+
+void AudioState::apply_volume(AudioOutPort &port) {
+    adapter->set_volume(port, muted ? 0.0f : port.volume * global_volume);
 }
 
 void AudioState::set_global_volume(float volume) {
-    global_volume = volume;
-    //  Update adapter volume for each port.
     const std::lock_guard lock(mutex);
-    for (const auto &[_, port] : out_ports) {
-        adapter->set_volume(*port, port->volume * volume);
-    }
+    global_volume = volume;
+    for (const auto &[_, port] : out_ports)
+        apply_volume(*port);
 }
 
-void AudioState::switch_state(const bool pause) {
-    adapter->switch_state(pause);
+void AudioState::set_pause_state(bool paused, bool freeze) {
+    const std::lock_guard lock(mutex);
+    if (suspended != freeze) {
+        adapter->switch_state(freeze);
+        suspended = freeze;
+    }
+    // A running Ad Hoc session must keep draining each audio stream at its normal rate.
+    if (muted != paused) {
+        muted = paused;
+        for (const auto &[_, port] : out_ports)
+            apply_volume(*port);
+    }
 }
 
 int AudioState::get_rest_sample(AudioOutPort &out_port) {
