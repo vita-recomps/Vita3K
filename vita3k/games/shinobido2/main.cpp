@@ -144,7 +144,7 @@ game_frontend::IniLayout ini_layout() {
                         "fast). Read when the game starts." },
                     layout::filter(),
                     layout::fps_counter(),
-                    layout::mipmaps(true) } },
+                    layout::mipmaps(true), layout::custom_textures() } },
             audio_layout(),
             game_layout(),
             cheats_layout(),

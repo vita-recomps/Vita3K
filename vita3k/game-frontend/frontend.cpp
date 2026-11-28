@@ -51,6 +51,7 @@
 #include <packages/license.h>
 #include <packages/pkg.h>
 #include <renderer/state.h>
+#include <renderer/texture_cache.h>
 #include <sdl-frontend/session.h>
 #include <touch/state.h>
 #include <util/log.h>
@@ -817,6 +818,12 @@ int run(Profile &profile, int argc, char *argv[]) {
     cfg.v_sync = settings.vsync;
     cfg.screen_filter = settings.filter;
     apply_fps_counter(cfg, settings.fps_counter);
+    // [display] custom_textures and [debug] export_textures: Vita3K's texture replacement
+    // (apply_renderer_config hands them to the texture cache; its folders are set below, once the
+    // renderer exists). Players 2 and up only import: one copy writes the export.
+    cfg.import_textures = settings.custom_textures;
+    cfg.export_textures = ctx.player == 1 && settings.export_textures != "off";
+    cfg.export_as_png = settings.export_textures != "dds";
     // --dump-elfs runs the game unseen (a setup's step): no sound either
     cfg.audio_volume = dump_elfs_seconds > 0 ? 0 : settings.volume;
     if (profile.hooks.configure)
@@ -1359,6 +1366,16 @@ int run(Profile &profile, int argc, char *argv[]) {
                 // binding on F5 still presses its button
                 LOG_INFO("User mark {} at frame {} (F5)", ++user_marks, emuenv.display.frames_set.load());
                 keyboard.key(emuenv, event.key.scancode, true);
+            } else if (event.key.key == SDLK_F9) {
+                // [display] custom_textures: the import folder is read again and every texture
+                // uploaded again (on the render thread), to see a texture pack's changes without a
+                // restart. A binding on F9 still presses its button
+                if (emuenv.renderer && emuenv.cfg.current_config.import_textures)
+                    if (renderer::TextureCache *cache = emuenv.renderer->get_texture_cache()) {
+                        cache->request_replacement_refresh();
+                        LOG_INFO("Custom textures read again (F9)");
+                    }
+                keyboard.key(emuenv, event.key.scancode, true);
             } else if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)))
                 SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
             else if (event.key.key == SDLK_F12) {
@@ -1555,6 +1572,17 @@ int run(Profile &profile, int argc, char *argv[]) {
             // [debug] surface_sync: which scenes wait for the GPU
             emuenv.renderer->surface_sync_wait = settings.surface_sync < 3 ? settings.surface_sync : 0;
             LOG_INFO("surface sync: {}", std::array<const char *, 4>{ "exact", "targeted", "latent", "off" }[settings.surface_sync]);
+            // texture replacement: <id>/textures/import|export/<title ID>/, player 1's folder for
+            // every player (the renderer's own default is the player's data folder, without the ID)
+            const auto &cc = emuenv.cfg.current_config;
+            if (cc.import_textures || cc.export_textures) {
+                if (renderer::TextureCache *cache = emuenv.renderer->get_texture_cache()) {
+                    const fs::path textures = ctx.exe_dir / profile.id / "textures";
+                    cache->set_replacement_folders(textures / "import" / profile.title_id, textures / "export" / profile.title_id);
+                    LOG_INFO("Texture replacement: import {} from {}, export {}", cc.import_textures ? "on" : "off",
+                        fs_utils::path_to_utf8(textures / "import" / profile.title_id), cc.export_textures ? settings.export_textures : "off");
+                }
+            }
         }
         if (dump_elfs_seconds > 0 && std::chrono::steady_clock::now() - session_start > std::chrono::duration<double>(dump_elfs_seconds)) {
             // --dump-elfs: the modules the game loaded so far are written; then quit

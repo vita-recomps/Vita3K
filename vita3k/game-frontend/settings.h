@@ -115,6 +115,7 @@ struct Settings {
     bool vsync = true;
     std::string filter = "Bilinear";
     std::string fps_counter = "off"; // off, fps, frametime, stats, graph
+    bool custom_textures = false; // Vita3K's texture import (TextureCache), off: hashing stays per texture
     // [audio]
     int volume = 100;
     // [recompiled]
@@ -130,6 +131,7 @@ struct Settings {
     bool net_trace = false; // every Ad Hoc packet in the log (net: VITA3K_NET_TRACE=1)
     int gpu = 0; // 0: Vita3K's choice (a discrete GPU first); N: the Nth Vulkan device the log lists
     int hitch_log_ms = 100; // a slower game frame is logged (SceDisplay: VITA3K_HITCH_MS); 0 off
+    std::string export_textures = "off"; // off, png, dds: Vita3K's texture export (player 1 only)
     std::string gpu_driver = "auto"; // Android: auto, system, or a libadrenotools package in the app's files/driver/
     // [keyboard] and [gamepad]: Vita button -> keys / gamepad button, applied by input.cpp
     std::map<std::string, std::string> keyboard, gamepad;
@@ -176,6 +178,9 @@ SettingSpec filter();
 SettingSpec fps_counter();
 // [display] mipmaps: renderer::State::generate_mips, which the front end sets once the renderer exists
 SettingSpec mipmaps(bool on_by_default);
+// [display] custom_textures: Vita3K's texture import from <id>/textures/import/<title ID>/ (F9 reads
+// it again); its export is [debug] export_textures
+SettingSpec custom_textures();
 // [game] repatch: the frontend serves ux0/rePatch/<title ID>/ in place of the game's files (repatch.h)
 SettingSpec repatch();
 IniSection audio();

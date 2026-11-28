@@ -25,6 +25,8 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -176,6 +178,28 @@ public:
     // thread): every texture is uploaded again at its next use.
     std::atomic<TextureOverride *> texture_override{ nullptr };
     void refresh_texture_override() { texture_override_changed = true; }
+
+    // Texture replacement from a front end, safe from any thread: the render thread applies the
+    // change at its next texture bind, reads the import folder again (refresh_available_textures)
+    // and uploads every texture again. request_replacement_refresh: to see a texture pack's
+    // changes without a restart. set_replacement_folders: where to import from and export to,
+    // in place of the shared path's textures/import|export/<game id> chosen at init.
+    void request_replacement_refresh() { replacement_refresh = true; }
+    void set_replacement_folders(const fs::path &import, const fs::path &export_) {
+        {
+            std::lock_guard<std::mutex> guard(replacement_folders_mutex);
+            pending_replacement_folders = std::make_pair(import, export_);
+        }
+        replacement_refresh = true;
+    }
+
+private:
+    std::atomic<bool> replacement_refresh{ false };
+    std::mutex replacement_folders_mutex;
+    std::optional<std::pair<fs::path, fs::path>> pending_replacement_folders;
+    void apply_replacement_refresh();
+
+public:
 
     virtual void select(size_t index, const SceGxmTexture &texture) = 0;
     virtual void configure_texture(const SceGxmTexture &texture) = 0;

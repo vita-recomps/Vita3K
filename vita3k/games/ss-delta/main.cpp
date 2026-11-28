@@ -171,6 +171,7 @@ game_frontend::IniLayout ini_layout() {
             // off: no visible change on the shimmering ST17 ground (the owner, 2026-10-14), so its cause
             // there is something else (**hypothesis**: explicit-LOD sampling or geometry)
             layout::mipmaps(false),
+            layout::custom_textures(),
         } };
     // the settings menu changes the frame rate while the game runs: on_tick reads it every tick
     for (auto &spec : display.settings) {
