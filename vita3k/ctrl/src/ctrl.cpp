@@ -607,11 +607,12 @@ int ctrl_get(const SceUID thread_id, EmuEnvState &emuenv, int port, SceCtrlData2
     pData->timeStamp = timestamp;
     retrieve_ctrl_data(emuenv, port, is_v2, negative, from_ext, pData->buttons, pData->lx, pData->ly, pData->rx, pData->ry);
 
+    const uint64_t vblank_us = 1000000ULL / static_cast<uint64_t>(std::max(1, emuenv.display.vblank_rate.load(std::memory_order_relaxed)));
     for (int i = 1; i < nb_returned_data; i++) {
         memcpy(&pData[i], &pData[0], sizeof(SceCtrlData2));
 
-        // update the timestamp, 1 vsync = 1/60 sec = 16 667 us earlier
-        pData[i].timeStamp -= i * 16667ULL;
+        // update the timestamp by one emulated vblank per sample
+        pData[i].timeStamp -= i * vblank_us;
     }
 
     return nb_returned_data;

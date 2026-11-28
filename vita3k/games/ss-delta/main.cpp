@@ -23,11 +23,13 @@
 #include "../../game-frontend/profile.h"
 #include "allies.h"
 #include "dlc.h"
+#include "frame_pacing.h"
 #include "saves.h"
 
 #include <config/state.h>
 #include <cpu/aot.h>
 #include <ctrl/state.h>
+#include <display/state.h>
 #include <emuenv/state.h>
 #include <gxm/state.h>
 #include <gxm/types.h>
@@ -163,9 +165,11 @@ game_frontend::IniLayout ini_layout() {
             layout::window_scale(),
             layout::fullscreen(id, exe),
             layout::vsync(),
-            { "frame_rate", Kind::Choice, "60", 0, 0, { "30", "60" },
-                "The game's frame rate: 60, or 30 as on the Vita. The game keeps its speed at 60. Loading\n"
-                "screens run at 30 only with a game built before ss-delta 0.5.0 (build it again)." },
+            { "frame_rate", Kind::Choice, "60", 0, 0, { "30", "60", "90", "120" },
+                "The game's frame rate: 60 (default), 30 as on the Vita, or 90 / 120 on a high-refresh screen.\n"
+                "The game keeps its speed at 60; 90 and 120 raise the emulated vblank rate to match and need a\n"
+                "90/120 Hz screen (or VSync off) and enough CPU headroom. Loading screens run at 30 only with\n"
+                "a game built before ss-delta 0.5.0 (build it again)." },
             layout::filter(),
             layout::fps_counter(),
             // off: no visible change on the shimmering ST17 ground (the owner, 2026-10-14), so its cause
@@ -406,16 +410,8 @@ void unscale_depth_uvs(SceGxmProgram &program) {
 // loading screens at 30 fps, while the NowLoadingTask singleton (*0x81c9603c) is in state (+0xa4) 2,
 // 3 or 5 (opening, "roading_loop", "roading_end"; 0x812b58ec). After a quest it plays the loop
 // backwards (6) and rests in 4 until reset, so those stay at the set rate.
-// The frame timer's period for a rate. At 60 it is 16000 us, not 16666: the game waits out the
-// timer and then flips on the next vblank, and a host wait overshoots by up to about a millisecond,
-// so with 16666 a few frames a second just missed their vblank and took two (57-58 fps on every GPU).
-// The flip still waits for each vblank, so the game can't run faster than 60.
-static uint64_t frame_period_us(int fps) {
-    return fps == 60 ? 16000 : 1000000ull / fps;
-}
-
-// Called every frame; returns the rate it set (0: not yet).
-int update_frame_rate(EmuEnvState &emuenv, int fps, int current) {
+// Called every frame; returns the rate it set (0: not yet, -1: unexpected state, left alone).
+int update_frame_rate(EmuEnvState &emuenv, int fps) {
     auto &mem = emuenv.mem;
     const auto u32 = [&](Address a) -> uint32_t * { return is_valid_addr(mem, a) ? Ptr<uint32_t>(a).get(mem) : nullptr; };
     uint32_t *const holder = u32(0x81c957cc);
@@ -437,17 +433,23 @@ int update_frame_rate(EmuEnvState &emuenv, int fps, int current) {
         told = true;
         LOG_INFO("frame_rate: loading screens {}", loading_fixed ? "at the set rate (the recompiled eboot has the fix)" : "at 30 fps (an eboot without the loading-screen fix)");
     }
-    const int want = loading && !loading_fixed ? 30 : fps;
-    if (want == current && *period == frame_period_us(want))
-        return current;
-    if ((*period != frame_period_us(30) && *period != frame_period_us(fps)) || (*flip != 2 && *flip != 60u / fps)) {
-        LOG_WARN("frame_rate: unexpected frame timer {} us / flip threshold {}; left alone", *period, *flip);
+    const bool loading_fallback = loading && !loading_fixed;
+    int vblank_rate = emuenv.display.vblank_rate.load(std::memory_order_relaxed);
+    uint64_t current_period = *period;
+    uint32_t current_flip = *flip;
+    const auto update = ss_delta::apply_frame_pacing(fps, loading_fallback, current_period, current_flip, vblank_rate);
+    if (update.unexpected) {
+        LOG_WARN("frame_rate: unexpected frame timer {} us / flip threshold {} (target {} fps); left alone", *period, *flip, fps);
         return -1;
     }
-    *period = frame_period_us(want);
-    *flip = 60 / want;
-    LOG_INFO("frame_rate: {} fps{} (loading state {}, frame timer {} us, flip every {} vblank)", want, want != fps ? " for a loading screen" : "", state, *period, *flip);
-    return want;
+    if (!update.changed)
+        return update.rate;
+    *period = current_period;
+    *flip = current_flip;
+    emuenv.display.vblank_rate.store(vblank_rate, std::memory_order_relaxed);
+    LOG_INFO("frame_rate: {} fps{} (loading state {}, vblank {} Hz, frame timer {} us, flip every {} vblank)",
+        update.rate, update.rate != fps ? " for a loading screen" : "", state, vblank_rate, *period, *flip);
+    return update.rate;
 }
 
 // [game] skip_intro (ss-delta docs/01-research.md, "Boot logos"): the boot's health warning and
@@ -1111,8 +1113,8 @@ int main(int argc, char *argv[]) {
     };
     hooks.on_tick = [&](game_frontend::Context &ctx) {
         const int fps = ctx.settings->values.get_int("display.frame_rate");
-        if (fps != 30 && frame_rate != -1)
-            frame_rate = update_frame_rate(*ctx.emuenv, fps, frame_rate);
+        if ((fps != 30 || frame_rate != 30) && frame_rate != -1)
+            frame_rate = update_frame_rate(*ctx.emuenv, fps);
         if (ctx.settings->values.get_bool("game.skip_intro"))
             intro_skipped = skip_intro_logos(*ctx.emuenv, intro_skipped);
         apply_cheats(*ctx.emuenv, ctx.settings->values, cheats);

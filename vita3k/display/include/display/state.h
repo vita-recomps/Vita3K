@@ -78,6 +78,9 @@ struct DisplayState {
     // vblanks that sceDisplayWaitVblankStart(CB) waits for: 1 as on the Vita; a game's front end
     // sets 2 to run a game that waits once per frame at 30 fps for a while (shinobido2)
     std::atomic<int> vblank_start_count{ 1 };
+    // emulated vblank frequency in Hz: 60 as on the Vita; a game's front end raises it (e.g. 90 or
+    // 120) for frame rates above 60 so vblank-paced pad/touch reads and flips can keep up
+    std::atomic<int> vblank_rate{ 60 };
 
     // if set to true, make sceDisplayWaitVblankStartMulti/sceDisplayWaitSetFrameBufMulti behave as sceDisplayWaitVblankStart/sceDisplayWaitSetFrameBuf
     // this allows some game running at 30fps to run at 60fps without any issue

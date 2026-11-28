@@ -25,22 +25,105 @@
 
 #include <chrono>
 #include <motion/functions.h>
+#include <thread>
 #include <touch/functions.h>
 #include <util/thread_qos.h>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+#endif
+
 // Code heavily influenced by PPSSSPP's SceDisplay.cpp
 
-static constexpr int TARGET_FPS = 60;
-static constexpr int64_t TARGET_MICRO_PER_FRAME = 1000000LL / TARGET_FPS;
+static constexpr int DEFAULT_VBLANK_RATE = 60;
 // how many cycles do we need to see before we start predicting the next frame
 static constexpr int predict_threshold = 3;
 static constexpr int max_expected_swapchain_size = 6;
 
+namespace {
+
+class VblankPacer {
+public:
+#ifdef _WIN32
+    VblankPacer() {
+        winmm = LoadLibraryW(L"winmm.dll");
+        if (winmm) {
+            time_begin_period = reinterpret_cast<TimerPeriodFn>(GetProcAddress(winmm, "timeBeginPeriod"));
+            time_end_period = reinterpret_cast<TimerPeriodFn>(GetProcAddress(winmm, "timeEndPeriod"));
+            if (time_begin_period && time_end_period && time_begin_period(1) == 0)
+                period_active = true;
+        }
+        timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!timer)
+            timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    }
+
+    ~VblankPacer() {
+        if (timer)
+            CloseHandle(timer);
+        if (period_active && time_end_period)
+            time_end_period(1);
+        if (winmm)
+            FreeLibrary(winmm);
+    }
+
+    VblankPacer(const VblankPacer &) = delete;
+    VblankPacer &operator=(const VblankPacer &) = delete;
+
+    void sleep_until(std::chrono::steady_clock::time_point target) const {
+        constexpr auto spin_margin = std::chrono::microseconds(400);
+        constexpr auto min_sleep = std::chrono::microseconds(500);
+        const auto now = std::chrono::steady_clock::now();
+        if (target <= now)
+            return;
+        const auto remaining = target - now;
+        if (timer && remaining > min_sleep) {
+            LARGE_INTEGER due_time{};
+            const auto wait_us = std::chrono::duration_cast<std::chrono::microseconds>(remaining - spin_margin).count();
+            due_time.QuadPart = -wait_us * 10LL;
+            if (SetWaitableTimer(timer, &due_time, 0, nullptr, nullptr, FALSE))
+                WaitForSingleObject(timer, INFINITE);
+        } else if (remaining > min_sleep) {
+            std::this_thread::sleep_until(target - spin_margin);
+        }
+        while (std::chrono::steady_clock::now() < target)
+            SwitchToThread();
+    }
+
+private:
+    using TimerPeriodFn = unsigned int(__stdcall *)(unsigned int);
+    HMODULE winmm = nullptr;
+    TimerPeriodFn time_begin_period = nullptr;
+    TimerPeriodFn time_end_period = nullptr;
+    bool period_active = false;
+    HANDLE timer = nullptr;
+#else
+    void sleep_until(std::chrono::steady_clock::time_point target) const {
+        std::this_thread::sleep_until(target);
+    }
+#endif
+};
+
+} // namespace
+
 static void vblank_sync_thread(EmuEnvState &emuenv) {
     util::raise_thread_qos();
     DisplayState &display = emuenv.display;
+    VblankPacer pacer;
+    int prev_rate = 0;
+    std::chrono::steady_clock::time_point next_vblank{};
 
     while (!display.abort.load()) {
+        const int vblank_rate = std::max(1, display.vblank_rate.load(std::memory_order_relaxed));
         {
             const std::lock_guard<std::mutex> guard(display.mutex);
 
@@ -49,12 +132,14 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
                 ++display.vblank_count;
 
                 // in this case, even though no new game frames are being rendered, we still need to update the screen
-                if (emuenv.kernel.is_threads_paused() || (emuenv.common_dialog.status == SCE_COMMON_DIALOG_STATUS_RUNNING))
-                    // only display the UI/common dialog at 30 fps
+                if (emuenv.kernel.is_threads_paused() || (emuenv.common_dialog.status == SCE_COMMON_DIALOG_STATUS_RUNNING)) {
+                    // only display the UI/common dialog at ~30 fps
                     // this is necessary so that the command buffer processing doesn't get starved
                     // with vsync enabled and a screen with a refresh rate of 60Hz or less
-                    if (display.vblank_count % 2 == 0)
+                    const uint64_t ui_divider = static_cast<uint64_t>(std::max(1, vblank_rate / 30));
+                    if (display.vblank_count % ui_divider == 0)
                         emuenv.renderer->should_display = true;
+                }
             }
 
             // maybe we should also use a mutex for this part, but it shouldn't be an issue
@@ -69,9 +154,17 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
                 return waiter.entry.target_vcount <= display.vblank_count;
             });
         }
-        const auto time_ms = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        const auto time_left = TARGET_MICRO_PER_FRAME - (time_ms % TARGET_MICRO_PER_FRAME);
-        std::this_thread::sleep_for(std::chrono::microseconds(time_left));
+        const auto period = std::chrono::microseconds(1000000LL / vblank_rate);
+        const auto now = std::chrono::steady_clock::now();
+        if (vblank_rate != prev_rate) {
+            next_vblank = now + period;
+            prev_rate = vblank_rate;
+        } else {
+            next_vblank += period;
+            if (now > next_vblank + period * 2)
+                next_vblank = now + period;
+        }
+        pacer.sleep_until(next_vblank);
     }
 }
 
@@ -219,6 +312,7 @@ void DisplayState::deinit() {
 
     vblank_count = 0;
     last_setframe_vblank_count = 0;
+    vblank_rate.store(DEFAULT_VBLANK_RATE, std::memory_order_relaxed);
 
     fps_hack = false;
     // pretty sure we set this on game boot

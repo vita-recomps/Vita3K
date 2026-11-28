@@ -83,6 +83,8 @@ public:
     bool need_rebuild = false;
     // set when we also need to recreate the surface before rebuilding swapchain
     bool need_surface_recreate = false;
+    // last applied VSync state for present mode selection
+    bool vsync_enabled = true;
 
     ScreenRenderer(VKState &state);
 
@@ -111,5 +113,7 @@ private:
     bool ensure_swapchain();
     bool rebuild_swapchain_if_visible();
     bool surface_matches_window_size();
+    vk::PresentModeKHR pick_present_mode(bool vsync) const;
+    void apply_pending_vsync();
 };
 } // namespace renderer::vulkan

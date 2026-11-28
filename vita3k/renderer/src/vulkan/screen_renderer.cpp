@@ -191,28 +191,10 @@ bool ScreenRenderer::setup() {
         state.deep_stencil_use = vk::Format::eD16Unorm;
     }
 
-    // preferred order : mailbox > fifo_relaxed > fifo > whatever
-    // the only drawback for mailbox is that it draws more power, so maybe on a portable device use something else
-    // this one should always be available
-    present_mode = vk::PresentModeKHR::eImmediate;
-    const auto present_modes = state.physical_device.getSurfacePresentModesKHR(surface);
-    for (const auto &mode : present_modes) {
-        if (mode == vk::PresentModeKHR::eMailbox) {
-            present_mode = mode;
-            break;
-        }
-
-        if (mode == vk::PresentModeKHR::eFifoRelaxed) {
-            present_mode = mode;
-        }
-        if (present_mode == vk::PresentModeKHR::eFifoRelaxed)
-            continue;
-
-        if (mode == vk::PresentModeKHR::eFifo) {
-            present_mode = mode;
-        }
-    }
-    LOG_INFO("Present mode: {}", vk::to_string(present_mode));
+    const int initial_vsync = state.pending_vsync.exchange(-1, std::memory_order_relaxed);
+    vsync_enabled = initial_vsync != 0;
+    present_mode = pick_present_mode(vsync_enabled);
+    LOG_INFO("Present mode: {} (vsync {})", vk::to_string(present_mode), vsync_enabled ? "on" : "off");
 
     create_render_pass();
 
@@ -409,6 +391,8 @@ bool ScreenRenderer::acquire_swapchain_image() {
         swapchain_image_idx = 0xDEADBEAF;
         return false;
     }
+
+    apply_pending_vsync();
 
     vk::Result acquire_result = vk::Result::eErrorOutOfDateKHR;
 
@@ -710,13 +694,60 @@ bool ScreenRenderer::rebuild_swapchain_if_visible() {
 #ifdef __ANDROID__
     if (!create())
         return false;
+    present_mode = pick_present_mode(vsync_enabled);
 #else
-    if (need_surface_recreate && !create())
-        return false;
+    if (need_surface_recreate) {
+        if (!create())
+            return false;
+        present_mode = pick_present_mode(vsync_enabled);
+    }
 #endif
 
     create_swapchain();
     return static_cast<bool>(swapchain);
+}
+
+vk::PresentModeKHR ScreenRenderer::pick_present_mode(bool vsync) const {
+    if (!surface)
+        return vk::PresentModeKHR::eFifo;
+
+    const auto present_modes = state.physical_device.getSurfacePresentModesKHR(surface);
+    const auto has = [&](vk::PresentModeKHR mode) {
+        return std::find(present_modes.begin(), present_modes.end(), mode) != present_modes.end();
+    };
+
+    if (!vsync) {
+        if (has(vk::PresentModeKHR::eImmediate))
+            return vk::PresentModeKHR::eImmediate;
+        if (has(vk::PresentModeKHR::eMailbox))
+            return vk::PresentModeKHR::eMailbox;
+        if (has(vk::PresentModeKHR::eFifoRelaxed))
+            return vk::PresentModeKHR::eFifoRelaxed;
+        return vk::PresentModeKHR::eFifo;
+    }
+
+    // vsync on: keep Vita3K's preference (mailbox > fifo_relaxed > fifo)
+    if (has(vk::PresentModeKHR::eMailbox))
+        return vk::PresentModeKHR::eMailbox;
+    if (has(vk::PresentModeKHR::eFifoRelaxed))
+        return vk::PresentModeKHR::eFifoRelaxed;
+    if (has(vk::PresentModeKHR::eFifo))
+        return vk::PresentModeKHR::eFifo;
+    return present_modes.empty() ? vk::PresentModeKHR::eFifo : present_modes.front();
+}
+
+void ScreenRenderer::apply_pending_vsync() {
+    const int pending = state.pending_vsync.exchange(-1, std::memory_order_relaxed);
+    if (pending < 0)
+        return;
+
+    vsync_enabled = pending != 0;
+    const vk::PresentModeKHR wanted = pick_present_mode(vsync_enabled);
+    if (wanted != present_mode) {
+        present_mode = wanted;
+        need_rebuild = true;
+        LOG_INFO("Present mode: {} (vsync {})", vk::to_string(present_mode), vsync_enabled ? "on" : "off");
+    }
 }
 
 bool ScreenRenderer::surface_matches_window_size() {

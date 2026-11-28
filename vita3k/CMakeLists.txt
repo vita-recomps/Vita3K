@@ -583,7 +583,8 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE OR ANDROID)
 	endfunction()
 
 	# Soul Sacrifice Delta (PCSA00152)
-	add_game(ss-delta games/ss-delta/main.cpp games/ss-delta/saves.cpp games/ss-delta/saves.h
+	add_game(ss-delta games/ss-delta/main.cpp games/ss-delta/frame_pacing.h
+		games/ss-delta/saves.cpp games/ss-delta/saves.h
 		games/ss-delta/dlc.cpp games/ss-delta/dlc.h games/ss-delta/allies.cpp games/ss-delta/allies.h
 		games/ss-delta/button_atlases.inc
 		games/ss-delta/ss-delta.ico games/ss-delta/ss-delta.rc)
